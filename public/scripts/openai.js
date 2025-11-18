@@ -233,6 +233,24 @@ export const reasoning_effort_types = {
     max: 'max',
 };
 
+export const verbosity_types = {
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+};
+
+export const service_tier_types = {
+    flex: 'flex',
+    default: 'default',
+    priority: 'priority',
+}
+
+export const include = [];
+let [messagelogprobs, encrypted_content] = include;
+
+messagelogprobs = ['message.output_text.logprobs'];
+encrypted_content = ['reasoning.encrypted_content'];
+
 const sensitiveFields = [
     'reverse_proxy',
     'proxy_password',
@@ -331,6 +349,8 @@ export const settingsToUpdate = {
     function_calling: ['#openai_function_calling', 'function_calling', true, false],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
+    verbosity: ['#openai_verbosity', 'verbosity', false, false],
+    service_tier: ['#openai_service_tier', 'service_tier', false, false],
     enable_web_search: ['#openai_enable_web_search', 'enable_web_search', true, false],
     seed: ['#seed_openai', 'seed', false, false],
     n: ['#n_openai', 'n', false, false],
@@ -430,6 +450,9 @@ const default_settings = {
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
+    verbosity: verbosity_types.medium,
+    service_tier: service_tier_types.flex,
+    include: '',
     reasoning_effort: reasoning_effort_types.auto,
     enable_web_search: false,
     request_images: false,
@@ -526,6 +549,9 @@ const oai_settings = {
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
+    verbosity: verbosity_types.medium,
+    service_tier: service_tier_types.flex,
+    include: '',
     reasoning_effort: reasoning_effort_types.auto,
     enable_web_search: false,
     request_images: false,
@@ -549,6 +575,10 @@ export let openai_settings;
 
 /** @type {import('./PromptManager.js').PromptManager} */
 export let promptManager = null;
+let lastJailbreakInstructions = '';
+export function getLastJailbreakInstructions() {
+    return lastJailbreakInstructions;
+}
 
 async function validateReverseProxy() {
     if (!oai_settings.reverse_proxy) {
@@ -1516,6 +1546,10 @@ export async function prepareOpenAIMessages({
             chatCompletion.log('----------------------------------------------------');
         }
     } finally {
+        const messageCollection = chatCompletion.getMessages();
+        const instructions = extractPromptInstructions(messageCollection, 'jailbreak');
+        lastJailbreakInstructions = instructions || '';
+
         // Pass chat completion to prompt manager for inspection
         promptManager.setChatCompletion(chatCompletion);
 
@@ -1535,6 +1569,43 @@ export async function prepareOpenAIMessages({
     openai_messages_count = chat.filter(x => !x?.tool_calls && (x?.role === 'user' || x?.role === 'assistant'))?.length || 0;
 
     return [chat, promptManager.tokenHandler.counts];
+}
+
+function extractPromptInstructions(messages, identifier) {
+    if (!messages || typeof messages.removeByIdentifier !== 'function') {
+        return '';
+    }
+
+    const removed = messages.removeByIdentifier(identifier);
+    if (!removed) {
+        return '';
+    }
+
+    return normalizeMessageContent(removed.content);
+}
+
+function normalizeMessageContent(content) {
+    if (typeof content === 'string') {
+        return content.trim();
+    }
+
+    if (Array.isArray(content)) {
+        return content
+            .map(part => {
+                if (typeof part === 'string') return part;
+                if (typeof part?.text === 'string') return part.text;
+                return '';
+            })
+            .filter(Boolean)
+            .join('\n')
+            .trim();
+    }
+
+    if (content && typeof content === 'object' && typeof content.text === 'string') {
+        return content.text.trim();
+    }
+
+    return '';
 }
 
 /**
@@ -2259,6 +2330,30 @@ function getReasoningEffort() {
     return reasoningEffort;
 }
 
+function getVerbosity() {
+    const value = String(oai_settings.verbosity ?? '').toLowerCase();
+    switch (value) {
+        case verbosity_types.low:
+        case verbosity_types.medium:
+        case verbosity_types.high:
+            return value;
+        default:
+            return undefined;
+    }
+}
+
+function getServiceTier() {
+    const value = String(oai_settings.service_tier ?? '').toLowerCase();
+    switch (value) {
+        case service_tier_types.flex:
+        case service_tier_types.default:
+        case service_tier_types.priority:
+            return value;
+        default:
+            return undefined;
+    }
+}
+
 /**
  * Send a chat completion request to backend
  * @param {string} type (impersonate, quiet, continue, etc)
@@ -2269,17 +2364,30 @@ function getReasoningEffort() {
  * @throws {Error}
  */
 
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } = {}) {
+async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
     }
 
     // HACK: Filter out null and non-object messages
+    let instructions;
+    let messages = payload;
+
+    if (!Array.isArray(payload)) {
+        if (Array.isArray(payload?.prompt)) {
+            messages = payload.prompt;
+        } else if (Array.isArray(payload?.messages)) {
+            messages = payload.messages;
+        }
+        instructions = typeof payload?.instructions === 'string' ? payload.instructions : undefined;
+    }
+
     if (!Array.isArray(messages)) {
         throw new Error('messages must be an array');
     }
 
+    instructions = typeof instructions === 'string' ? instructions : undefined;
     messages = messages.filter(msg => msg && typeof msg === 'object');
 
     let logit_bias = {};
@@ -2344,7 +2452,22 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
         'enable_web_search': Boolean(oai_settings.enable_web_search),
         'request_images': Boolean(oai_settings.request_images),
         'custom_prompt_post_processing': oai_settings.custom_prompt_post_processing,
+        'include': oai_settings.include,
     };
+
+    const verbosityValue = getVerbosity();
+    if (verbosityValue) {
+        generate_data.verbosity = verbosityValue;
+    }
+
+    const service_tierValue = getServiceTier();
+    if (service_tierValue) {
+        generate_data.service_tier = service_tierValue;
+    }
+
+    if (instructions && instructions.trim()) {
+        generate_data.instructions = instructions.trim();
+    }
 
     if (isAzureOpenAI) {
         generate_data.azure_base_url = oai_settings.azure_base_url;
@@ -3228,6 +3351,35 @@ class MessageCollection {
             return acc;
         }, []);
     }
+
+    /**
+     * Removes and returns the first message with the specified identifier.
+     * @param {string} identifier
+     * @returns {Message|null}
+     */
+    removeByIdentifier(identifier) {
+        for (let i = 0; i < this.collection.length; i++) {
+            const item = this.collection[i];
+            if (!item) continue;
+            const isCollection = item instanceof MessageCollection;
+
+            if (!isCollection && item.identifier === identifier) {
+                return this.collection.splice(i, 1)[0];
+            }
+
+            if (isCollection) {
+                const removed = item.removeByIdentifier(identifier);
+                if (removed) {
+                    if (item.collection.length === 0) {
+                        this.collection.splice(i, 1);
+                    }
+                    return removed;
+                }
+            }
+        }
+
+        return null;
+    }
 }
 
 /**
@@ -3678,6 +3830,9 @@ function loadOpenAISettings(data, settings) {
     oai_settings.bypass_status_check = settings.bypass_status_check ?? default_settings.bypass_status_check;
     oai_settings.vertexai_express_project_id = settings.vertexai_express_project_id ?? default_settings.vertexai_express_project_id;
     oai_settings.show_thoughts = settings.show_thoughts ?? default_settings.show_thoughts;
+    oai_settings.verbosity = settings.verbosity ?? default_settings.verbosity;
+    oai_settings.service_tier = settings.service_tier ?? default_settings.service_tier;
+    oai_settings.include = settings.include ?? default_settings.include;
     oai_settings.reasoning_effort = settings.reasoning_effort ?? default_settings.reasoning_effort;
     oai_settings.enable_web_search = settings.enable_web_search ?? default_settings.enable_web_search;
     oai_settings.request_images = settings.request_images ?? default_settings.request_images;
@@ -3839,6 +3994,11 @@ function loadOpenAISettings(data, settings) {
 
     $('#openai_reasoning_effort').val(oai_settings.reasoning_effort);
     $(`#openai_reasoning_effort option[value="${oai_settings.reasoning_effort}"]`).prop('selected', true);
+    $('#openai_verbosity').val(oai_settings.verbosity);
+    $(`#openai_verbosity option[value="${oai_settings.verbosity}"]`).prop('selected', true);
+
+    $('#openai_service_tier').val(oai_settings.service_tier);
+    $(`#openai_service_tier option[value="${oai_settings.service_tier}"]`).prop('selected', true);
 
     if (settings.reverse_proxy !== undefined) oai_settings.reverse_proxy = settings.reverse_proxy;
     $('#openai_reverse_proxy').val(oai_settings.reverse_proxy);
@@ -6554,6 +6714,21 @@ export function initOpenAI() {
 
     $('#openai_reasoning_effort').on('input', function () {
         oai_settings.reasoning_effort = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openai_verbosity').on('input', function () {
+        oai_settings.verbosity = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openai_service_tier').on('input', function () {
+        oai_settings.service_tier = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openai_include').on('input', function () {
+        oai_settings.include = Array($(include).val());
         saveSettingsDebounced();
     });
 

@@ -56,3 +56,5 @@ public/scripts/extensions/third-party
 /StartDev.bat
 yarn.lock
 *.code-workspace
+st-agent-proxy/v1/chat/completions/server.js
+src/endpoints/backends/Get models.js

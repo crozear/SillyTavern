@@ -111,6 +111,7 @@ import {
     loadProxyPresets,
     selected_proxy,
     initOpenAI,
+    getLastJailbreakInstructions,
 } from './scripts/openai.js';
 
 import {
@@ -4455,7 +4456,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 messages: oaiMessages,
                 messageExamples: oaiMessageExamples,
             }, dryRun);
-            generate_data = { prompt: prompt };
+            const instructions = getLastJailbreakInstructions();
+            generate_data = {
+                prompt: prompt,
+                ...(instructions ? { instructions } : {}),
+            };
 
             // TODO: move these side-effects somewhere else, so this switch-case solely sets generate_data
             // counts will return false if the user has not enabled the token breakdown feature
@@ -5225,7 +5230,7 @@ function setInContextMessages(msgInContextCount, type) {
  */
 export async function sendGenerationRequest(type, data, options = {}) {
     if (main_api === 'openai') {
-        return await sendOpenAIRequest(type, data.prompt, abortController.signal, options);
+        return await sendOpenAIRequest(type, data, abortController.signal, options);
     }
 
     if (main_api === 'koboldhorde') {
@@ -5261,7 +5266,7 @@ export async function sendStreamingRequest(type, data, options = {}) {
 
     switch (main_api) {
         case 'openai':
-            return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, options);
+            return await sendOpenAIRequest(type, data, streamingProcessor.abortController.signal, options);
         case 'textgenerationwebui':
             return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
         case 'novel':

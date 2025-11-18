@@ -2058,7 +2058,7 @@
                                             </span>
                                         </div>
                                     </div>
-                                    <div class="range-block" data-source="deepseek,aimlapi,openrouter,custom,claude,xai,makersuite,vertexai,pollinations,moonshot,mistralai,fireworks,cometapi,electronhub,azure_openai,nanogpt">
+                                    <div class="range-block" data-source="deepseek,aimlapi,openrouter,openai,custom,claude,xai,makersuite,vertexai,pollinations,moonshot,mistralai,fireworks,cometapi,electronhub,azure_openai,nanogpt">
                                         <label for="openai_show_thoughts" class="checkbox_label widthFreeExpand">
                                             <input id="openai_show_thoughts" type="checkbox" />
                                             <span data-i18n="Request model reasoning">Request model reasoning</span>
@@ -2079,12 +2079,12 @@
                                                 <a href="https://docs.sillytavern.app/usage/prompts/reasoning/#reasoning-effort" target="_blank" class="opacity50p fa-solid fa-circle-question"></a>
                                             </label>
                                             <select id="openai_reasoning_effort">
+                                                <option data-i18n="openai_reasoning_effort_none" value="auto">None</option>
                                                 <option data-i18n="openai_reasoning_effort_auto" value="auto">Auto</option>
                                                 <option data-i18n="openai_reasoning_effort_minimum" value="min">Minimum</option>
                                                 <option data-i18n="openai_reasoning_effort_low" value="low">Low</option>
                                                 <option data-i18n="openai_reasoning_effort_medium" value="medium">Medium</option>
                                                 <option data-i18n="openai_reasoning_effort_high" value="high">High</option>
-                                                <option data-i18n="openai_reasoning_effort_maximum" value="max">Maximum</option>
                                             </select>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="openai,custom,xai,aimlapi,openrouter,perplexity,electronhub,azure_openai" data-i18n="OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.">
                                                 OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.
@@ -2095,6 +2095,26 @@
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai" data-i18n="Allocates a portion of the response length for thinking (Flash 2.5/Pro 2.5) (min: 0/128 tokens, low: 10%, medium: 25%, high: 50%, max: 24576/32768 tokens). Auto lets the model decide.">
                                                 Allocates a portion of the response length for thinking (Flash 2.5/Pro 2.5) (min: 0/128 tokens, low: 10%, medium: 25%, high: 50%, max: 24576/32768 tokens). Auto lets the model decide.
                                             </div>
+                                        </div>
+                                        <div class="flex-container oneline-dropdown">
+                                            <label for="openai_verbosity">
+                                                <span data-i18n="Verbosity">Verbosity</span>
+                                            </label>
+                                            <select id="openai_verbosity">
+                                                <option data-i18n="openai_verbosity_low" value="low">Low</option>
+                                                <option data-i18n="openai_verbosity_medium" value="medium">Medium</option>
+                                                <option data-i18n="openai_verbosity_high" value="high">High</option>
+                                            </select>
+                                        </div>
+                                        <div class="flex-container oneline-dropdown">
+                                            <label for="openai_service_tier">
+                                                <span data-i18n="Service Tier">Service Tier</span>
+                                            </label>
+                                            <select id="openai_service_tier">
+                                                <option data-i18n="openai_service_tier_flex" value="flex">Flex</option>
+                                                <option data-i18n="openai_service_tier_default" value="default">Default</option>
+                                                <option data-i18n="openai_service_tier_priority" value="priority">Priority</option>
+                                            </select>
                                         </div>
                                     </div>
                                     <div class="range-block" data-source="claude">
@@ -2917,6 +2937,13 @@
                             <div>
                                 <h4 data-i18n="OpenAI Model">OpenAI Model</h4>
                                 <select id="model_openai_select">
+                                    <optgroup label="GPT-5.1">
+                                        <option value="gpt-5.1">gpt-5.1</option>
+                                        <option value="gpt-5.1-2025-11-13">gpt-5.1-2025-11-13</option>
+                                        <option value="gpt-5.1-codex">gpt-5.1-codex</option>
+                                        <option value="gpt-5.1-codex-mini">gpt-5.1-codex-mini</option>
+                                        <option value="gpt-5.1-chat-latest">gpt-5.1-chat-latest</option>
+                                    </optgroup>
                                     <optgroup label="GPT-5">
                                         <option value="gpt-5">gpt-5</option>
                                         <option value="gpt-5-2025-08-07">gpt-5-2025-08-07</option>

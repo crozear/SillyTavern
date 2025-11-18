@@ -1575,6 +1575,11 @@ router.post('/status', async function (request, statusResponse) {
         return statusResponse.status(400).send({ error: true });
     }
 
+    if (request.body.reverse_proxy) {
+        console.info('Reverse proxy detected; skipping upstream status check.');
+        return statusResponse.send({ data: [] });
+    }
+
     try {
         const modelsUrl = new URL(urlJoin(apiUrl, '/models'));
         Object.keys(queryParams).forEach(key => {
@@ -1772,13 +1777,29 @@ router.post('/generate', function (request, response) {
         headers = {};
         bodyParams = {
             logprobs: request.body.logprobs,
-            top_logprobs: undefined,
+            top_logprobs: request.body.top_logprobs,
         };
 
         // Adjust logprobs params for Chat Completions API, which expects { top_logprobs: number; logprobs: boolean; }
         if (!isTextCompletion && bodyParams.logprobs > 0) {
             bodyParams.top_logprobs = bodyParams.logprobs;
             bodyParams.logprobs = true;
+        }
+
+        if (request.body.reverse_proxy && request.body.verbosity) {
+            bodyParams.verbosity = request.body.verbosity;
+        }
+
+        if (request.body.reverse_proxy && request.body.instructions) {
+            bodyParams.instructions = request.body.instructions;
+        }
+
+        if (request.body.reverse_proxy && request.body.service_tier) {
+            bodyParams.service_tier = request.body.service_tier;
+        }
+
+        if (request.body.reverse_proxy && request.body.include) {
+            bodyParams.include = request.body.include;
         }
 
         if (getConfigValue('openai.randomizeUserId', false, 'boolean')) {
@@ -1861,6 +1882,14 @@ router.post('/generate', function (request, response) {
 
         mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
         mergeObjectWithYaml(headers, request.body.custom_include_headers);
+
+        if (request.body.verbosity) {
+            bodyParams.verbosity = request.body.verbosity;
+        }
+
+        if (request.body.instructions) {
+            bodyParams.instructions = request.body.instructions;
+        }
     } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.PERPLEXITY) {
         apiUrl = API_PERPLEXITY;
         apiKey = readSecret(request.user.directories, SECRET_KEYS.PERPLEXITY);

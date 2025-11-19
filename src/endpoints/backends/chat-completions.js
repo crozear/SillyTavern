@@ -1783,7 +1783,7 @@ router.post('/generate', function (request, response) {
         // Adjust logprobs params for Chat Completions API, which expects { top_logprobs: number; logprobs: boolean; }
         if (!isTextCompletion && bodyParams.logprobs > 0) {
             bodyParams.top_logprobs = bodyParams.logprobs;
-            bodyParams.logprobs = true;
+            bodyParams.logprobs = false;
         }
 
         if (request.body.reverse_proxy && request.body.verbosity) {
@@ -1796,10 +1796,6 @@ router.post('/generate', function (request, response) {
 
         if (request.body.reverse_proxy && request.body.service_tier) {
             bodyParams.service_tier = request.body.service_tier;
-        }
-
-        if (request.body.reverse_proxy && request.body.include) {
-            bodyParams.include = request.body.include;
         }
 
         if (getConfigValue('openai.randomizeUserId', false, 'boolean')) {

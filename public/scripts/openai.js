@@ -225,7 +225,7 @@ const openrouter_middleout_types = {
 };
 
 export const reasoning_effort_types = {
-    auto: 'auto',
+    none: 'none',
     low: 'low',
     medium: 'medium',
     high: 'high',
@@ -244,12 +244,6 @@ export const service_tier_types = {
     default: 'default',
     priority: 'priority',
 }
-
-export const include = [];
-let [messagelogprobs, encrypted_content] = include;
-
-messagelogprobs = ['message.output_text.logprobs'];
-encrypted_content = ['reasoning.encrypted_content'];
 
 const sensitiveFields = [
     'reverse_proxy',
@@ -452,7 +446,6 @@ const default_settings = {
     show_thoughts: true,
     verbosity: verbosity_types.medium,
     service_tier: service_tier_types.flex,
-    include: '',
     reasoning_effort: reasoning_effort_types.auto,
     enable_web_search: false,
     request_images: false,
@@ -551,7 +544,6 @@ const oai_settings = {
     show_thoughts: true,
     verbosity: verbosity_types.medium,
     service_tier: service_tier_types.flex,
-    include: '',
     reasoning_effort: reasoning_effort_types.auto,
     enable_web_search: false,
     request_images: false,
@@ -2300,8 +2292,8 @@ function getReasoningEffort() {
 
     function resolveReasoningEffort() {
         switch (oai_settings.reasoning_effort) {
-            case reasoning_effort_types.auto:
-                return undefined;
+            case reasoning_effort_types.none:
+                return reasoning_effort_types.none;
             case reasoning_effort_types.min:
                 return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(oai_settings.chat_completion_source) && /^gpt-5/.test(getChatCompletionModel())
                     ? reasoning_effort_types.min
@@ -2333,6 +2325,7 @@ function getReasoningEffort() {
 function getVerbosity() {
     const value = String(oai_settings.verbosity ?? '').toLowerCase();
     switch (value) {
+        case verbosity_types.none:
         case verbosity_types.low:
         case verbosity_types.medium:
         case verbosity_types.high:
@@ -2396,6 +2389,7 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
     const isGoogle = oai_settings.chat_completion_source == chat_completion_sources.MAKERSUITE;
     const isVertexAI = oai_settings.chat_completion_source == chat_completion_sources.VERTEXAI;
     const isOAI = oai_settings.chat_completion_source == chat_completion_sources.OPENAI;
+    const isOpenAIReverseProxy = isOAI && Boolean(oai_settings.reverse_proxy);
     const isMistral = oai_settings.chat_completion_source == chat_completion_sources.MISTRALAI;
     const isCustom = oai_settings.chat_completion_source == chat_completion_sources.CUSTOM;
     const isCohere = oai_settings.chat_completion_source == chat_completion_sources.COHERE;
@@ -2452,7 +2446,6 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         'enable_web_search': Boolean(oai_settings.enable_web_search),
         'request_images': Boolean(oai_settings.request_images),
         'custom_prompt_post_processing': oai_settings.custom_prompt_post_processing,
-        'include': oai_settings.include,
     };
 
     const verbosityValue = getVerbosity();
@@ -2497,7 +2490,7 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
 
     // Add logprobs request (currently OpenAI only, max 5 on their side)
     if (useLogprobs && (isOAI || isAzureOpenAI || isCustom || isDeepSeek || isXAI || isAimlapi)) {
-        generate_data['logprobs'] = 5;
+        generate_data['logprobs'] = 0;
     }
 
     // Remove logit bias/logprobs/stop-strings if not supported by the model
@@ -2650,10 +2643,10 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         delete generate_data.top_logprobs;
         delete generate_data.stop;
         delete generate_data.logit_bias;
-        delete generate_data.temperature;
-        delete generate_data.top_p;
-        delete generate_data.frequency_penalty;
-        delete generate_data.presence_penalty;
+            delete generate_data.temperature;
+            delete generate_data.top_p;
+            delete generate_data.frequency_penalty;
+            delete generate_data.presence_penalty;
         if (oai_settings.openai_model.startsWith('o1')) {
             generate_data.messages.forEach((msg) => {
                 if (msg.role === 'system') {
@@ -2673,12 +2666,14 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         delete generate_data.top_logprobs;
         if (/chat-latest/.test(oai_settings.openai_model)) {
             delete generate_data.tools;
-            delete generate_data.tool_choice;
+            delete generate_data.tool_choice
         } else {
-            delete generate_data.temperature;
-            delete generate_data.top_p;
-            delete generate_data.frequency_penalty;
-            delete generate_data.presence_penalty;
+            if (!isOpenAIReverseProxy) {
+                delete generate_data.temperature;
+                delete generate_data.top_p;
+                delete generate_data.frequency_penalty;
+                delete generate_data.presence_penalty;
+            }
             delete generate_data.logit_bias;
             delete generate_data.stop;
         }
@@ -3832,7 +3827,6 @@ function loadOpenAISettings(data, settings) {
     oai_settings.show_thoughts = settings.show_thoughts ?? default_settings.show_thoughts;
     oai_settings.verbosity = settings.verbosity ?? default_settings.verbosity;
     oai_settings.service_tier = settings.service_tier ?? default_settings.service_tier;
-    oai_settings.include = settings.include ?? default_settings.include;
     oai_settings.reasoning_effort = settings.reasoning_effort ?? default_settings.reasoning_effort;
     oai_settings.enable_web_search = settings.enable_web_search ?? default_settings.enable_web_search;
     oai_settings.request_images = settings.request_images ?? default_settings.request_images;
@@ -6724,11 +6718,6 @@ export function initOpenAI() {
 
     $('#openai_service_tier').on('input', function () {
         oai_settings.service_tier = String($(this).val());
-        saveSettingsDebounced();
-    });
-
-    $('#openai_include').on('input', function () {
-        oai_settings.include = Array($(include).val());
         saveSettingsDebounced();
     });
 

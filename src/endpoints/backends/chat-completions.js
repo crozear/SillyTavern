@@ -2032,9 +2032,15 @@ router.post('/generate', function (request, response) {
         };
     }
 
+    const promptReference = isTextCompletion === true
+        ? textPrompt
+        : (request.body.reverse_proxy && request.body.prompt && typeof request.body.prompt === 'object' && !Array.isArray(request.body.prompt)
+            ? request.body.prompt
+            : undefined);
+
     const requestBody = {
         'messages': isTextCompletion === false ? request.body.messages : undefined,
-        'prompt': isTextCompletion === true ? textPrompt : undefined,
+        'prompt': promptReference,
         'model': request.body.model,
         'temperature': request.body.temperature,
         'max_tokens': request.body.max_tokens,

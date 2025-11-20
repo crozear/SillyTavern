@@ -8,6 +8,7 @@ import { Fuse, DOMPurify } from '../lib.js';
 import {
     abortStatusCheck,
     characters,
+    chat_metadata,
     event_types,
     eventSource,
     extension_prompt_roles,
@@ -74,6 +75,7 @@ import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
+import { extension_settings } from './extensions.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL } from './constants.js';
 
 export {
@@ -2481,11 +2483,70 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         delete generate_data.stop;
     }
 
-    // Proxy is only supported for Claude, OpenAI, Mistral, Google MakerSuite, and Vertex AI
-    if (oai_settings.reverse_proxy && [chat_completion_sources.CLAUDE, chat_completion_sources.OPENAI, chat_completion_sources.MISTRALAI, chat_completion_sources.MAKERSUITE, chat_completion_sources.VERTEXAI, chat_completion_sources.DEEPSEEK, chat_completion_sources.XAI].includes(oai_settings.chat_completion_source)) {
+    const proxySupportedSources = [
+        chat_completion_sources.CLAUDE,
+        chat_completion_sources.OPENAI,
+        chat_completion_sources.MISTRALAI,
+        chat_completion_sources.MAKERSUITE,
+        chat_completion_sources.VERTEXAI,
+        chat_completion_sources.DEEPSEEK,
+        chat_completion_sources.XAI,
+    ];
+    const useReverseProxy = oai_settings.reverse_proxy && proxySupportedSources.includes(oai_settings.chat_completion_source);
+    if (useReverseProxy) {
         await validateReverseProxy();
         generate_data['reverse_proxy'] = oai_settings.reverse_proxy;
         generate_data['proxy_password'] = oai_settings.proxy_password;
+        const promptVariables = getPromptVariablesForProxy();
+        if (promptVariables && !isTextCompletion) {
+            const existingPrompt = typeof generate_data.prompt === 'object' && !Array.isArray(generate_data.prompt) && generate_data.prompt !== null
+                ? { ...generate_data.prompt }
+                : {};
+            const existingVariables = typeof existingPrompt.variables === 'object' && !Array.isArray(existingPrompt.variables) && existingPrompt.variables !== null
+                ? existingPrompt.variables
+                : {};
+            generate_data.prompt = {
+                ...existingPrompt,
+                variables: {
+                    ...existingVariables,
+                    ...promptVariables,
+                },
+            };
+        }
+    }
+
+    if (useReverseProxy && Array.isArray(generate_data.messages)) {
+        generate_data.messages = generate_data.messages
+            .map((message) => {
+                if (!message || typeof message !== 'object') {
+                    return message;
+                }
+
+                if (message.role === 'tool') {
+                    const content =
+                        typeof message.content === 'string'
+                            ? message.content.trim()
+                            : message.content;
+
+                    if (!content || content === '[No content]') {
+                        return null;
+                    }
+
+                    const cloned = {
+                        ...message,
+                        role: 'user',
+                        content: typeof content === 'string' ? content : JSON.stringify(content),
+                    };
+                    if (typeof cloned.content === 'string' && message.tool_call_id) {
+                        cloned.content = `Tool response (${message.tool_call_id}): ${cloned.content}`;
+                    }
+                    delete cloned.tool_call_id;
+                    return cloned;
+                }
+
+                return message;
+            })
+            .filter(Boolean);
     }
 
     // Add logprobs request (currently OpenAI only, max 5 on their side)
@@ -2643,10 +2704,6 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         delete generate_data.top_logprobs;
         delete generate_data.stop;
         delete generate_data.logit_bias;
-            delete generate_data.temperature;
-            delete generate_data.top_p;
-            delete generate_data.frequency_penalty;
-            delete generate_data.presence_penalty;
         if (oai_settings.openai_model.startsWith('o1')) {
             generate_data.messages.forEach((msg) => {
                 if (msg.role === 'system') {
@@ -2903,6 +2960,68 @@ function parseOpenAITextLogprobs(logprobs) {
         }
         return { token, topLogprobs };
     });
+}
+
+/**
+ * Formats a SillyTavern variable value for prompt substitution.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function formatPromptVariableValue(value) {
+    if (value === undefined || value === null) {
+        return '';
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+    }
+
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+/**
+ * Collects local and global variables to pass to reverse proxies.
+ * @returns {Record<string, string>|null}
+ */
+function getPromptVariablesForProxy() {
+    const localVariables = chat_metadata?.variables;
+    const globalVariables = extension_settings?.variables?.global;
+
+    if (!localVariables && !globalVariables) {
+        return null;
+    }
+
+    const result = {};
+
+    /**
+     * @param {Record<string, unknown>|undefined|null} source
+     */
+    const assignVariables = (source) => {
+        if (!source || typeof source !== 'object') {
+            return;
+        }
+
+        for (const [key, value] of Object.entries(source)) {
+            if (!key) {
+                continue;
+            }
+
+            result[key] = formatPromptVariableValue(value);
+        }
+    };
+
+    assignVariables(globalVariables);
+    assignVariables(localVariables);
+
+    return Object.keys(result).length ? result : null;
 }
 
 async function calculateLogitBias() {

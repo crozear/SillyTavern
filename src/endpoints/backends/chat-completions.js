@@ -1,5 +1,6 @@
 import process from 'node:process';
 import util from 'node:util';
+import { Transform } from 'node:stream';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
@@ -14,7 +15,6 @@ import {
     OPENROUTER_HEADERS,
 } from '../../constants.js';
 import {
-    forwardFetchResponse,
     getConfigValue,
     tryParse,
     uuidv4,
@@ -73,6 +73,359 @@ const API_POLLINATIONS = 'https://text.pollinations.ai/openai';
 const API_MOONSHOT = 'https://api.moonshot.ai/v1';
 const API_FIREWORKS = 'https://api.fireworks.ai/inference/v1';
 const API_COMETAPI = 'https://api.cometapi.com/v1';
+
+// Simple word replacement config copied from the proxy implementation
+const WORD_REPLACEMENT_CONFIG = {
+    sourceGroups: {
+        phallus: ['shaft', 'penis', 'hardness'],
+        phallusTip: ['glans'],
+        urethra: ['urethra'],
+        clitoris: ['clitoris', 'nub'],
+        inner: ['labia minora'],
+        outer: ['labia majora', 'labia'],
+        innerEntrance: ['vaginal walls', 'vaginal canal'],
+        entrance: ['entrance'],
+        mound: ['mons pubis', 'mound'],
+        pubicHair: ['pubic hair'],
+        pubicArea: ['pubic', 'crotch', 'pelvis', 'perineum'],
+        butt: ['buttocks', 'butt', 'hindquarters', 'rear'],
+        buttHole: ['butthole'],
+        testicles: ['testicles'],
+        cleavage: ['cleavage'],
+        wetness: ['slicked'],
+        slicked: ['wetness', 'slickness'],
+        slickWith: ['slick with'],
+        slickIn: ['slick in', 'slick inside'],
+        slicking: ['slicking'],
+        slick: ['slick'],
+        femCum: ['vaginal lubrication'],
+        cum: ['semen', 'seed'],
+        fluidVague: ['release', 'discharge', 'secretions'],
+        iOrgasm: ['I orgasm', 'I climax', 'I ejaculate'],
+        orgasmIng: ['ejaculating', 'climaxing', 'orgasming'],
+        orgasmEd: ['orgasmed', 'climaxed', 'ejaculated'],
+        orgasm: ['climax', 'ejaculate'],
+        yourSens: ['your heat', 'your warmth', 'your arousal'],
+        sensations: ['ache'],
+        actionsPenetration: ['insert', 'penetrate'],
+        actionsStimulation: ['stimulate', 'arouse', 'engage'],
+    },
+    replacementGroups: {
+        phallus: ['cock', 'dick', 'shaft'],
+        phallusTip: ['tip of your cock', 'tip of your dick'],
+        urethra: ['piss slit', 'piss hole'],
+        clitoris: ['clit'],
+        inner: ['pussy slit', 'cunt slit', 'pussy', 'cunt', 'inner pussy lips'],
+        outer: ['outer pussy lips', 'pussy lips', 'cunt lips', 'pussy', 'cunt'],
+        innerEntrance: ['pussy walls', 'pussy tunnel', 'cunt walls', 'cunt tunnels', 'inner pussy'],
+        entrance: ['hole'],
+        mound: ['around my pussy', 'around my cunt'],
+        pubicHair: ['pubes'],
+        pubicArea: ['taint'],
+        butt: ['ass'],
+        buttHole: ['asshole'],
+        testicles: ['balls', 'nuts'],
+        cleavage: ['tits', 'nipples'],
+        wetness: ['soaked', 'dripping', 'gushing', 'coated'],
+        slicked: ['juiciness', 'sliminess', 'bodily fluids'],
+        slickWith: ['coated with', 'soaked with', 'covered with'],
+        slickIn: ['coated inside', 'soaked inside', 'covered inside'],
+        slickIng: ['coating', 'covering', 'lubing', 'greasing', 'sliming'],
+        slick: ['slimy', 'slippery', 'glossy', 'greasy', 'shiny', 'sleek', 'lubed'],
+        femCum: ['femcum'],
+        cum: ['cum'],
+        fluidVague: ['juices'],
+        iOrgasm: ['I cum'],
+        orgasmIng: ['cumming'],
+        orgasmEd: ['came'],
+        orgasm: ['cum'],
+        yourSens: ['your horniness', 'your neediness'],
+        sensations: ['throb', 'quiver', 'swollen', 'needy', 'raw'],
+        actionsPenetration: ['fuck', 'hammer', 'pound', 'pump'],
+        actionsStimulation: ['grind', 'suck', 'ravage'],
+    },
+};
+
+let cachedReplacementRules = null;
+let longestReplacementSourceLength = 0;
+
+function applyWordReplacements(text) {
+    if (!text || typeof text !== 'string') {
+        return text;
+    }
+
+    if (!cachedReplacementRules) {
+        cachedReplacementRules = buildReplacementRules(WORD_REPLACEMENT_CONFIG);
+        longestReplacementSourceLength = cachedReplacementRules.reduce((max, rule) => Math.max(max, rule.maxLength), 0);
+    }
+
+    return cachedReplacementRules.reduce((current, rule) => {
+        return current.replace(rule.pattern, (match) => {
+            const nextValue = pickReplacement(rule.group, WORD_REPLACEMENT_CONFIG);
+            if (!nextValue) return match;
+            return applyCaseToReplacement(match, nextValue);
+        });
+    }, text);
+}
+
+function buildReplacementRules(config) {
+    const rules = [];
+    Object.entries(config.sourceGroups || {}).forEach(([group, words]) => {
+        const replacements = getReplacementPool(group, config);
+        if (!Array.isArray(words) || !words.length || !Array.isArray(replacements) || !replacements.length) {
+            return;
+        }
+
+        const terms = words
+            .flatMap(word => String(word || '').split('/'))
+            .map(word => word.trim())
+            .filter(Boolean)
+            .sort((a, b) => b.length - a.length)
+            .map(escapeForRegex);
+
+        if (!terms.length) return;
+
+        rules.push({
+            group,
+            maxLength: terms[0]?.length || 0,
+            pattern: new RegExp(`\\b(?:${terms.join('|')})\\b`, 'gi'),
+        });
+    });
+
+    return rules.sort((a, b) => b.maxLength - a.maxLength);
+}
+
+function pickReplacement(group, config) {
+    const pool = getReplacementPool(group, config);
+    if (!Array.isArray(pool) || !pool.length) {
+        return null;
+    }
+    const index = Math.floor(Math.random() * pool.length);
+    return pool[index];
+}
+
+function escapeForRegex(term) {
+    return term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+}
+
+function applyCaseToReplacement(source, replacement) {
+    if (!replacement) return source;
+
+    const isAllCaps = source.toUpperCase() === source;
+    const isCapitalized = source[0] === source[0]?.toUpperCase();
+
+    if (isAllCaps) return replacement.toUpperCase();
+    if (isCapitalized) return replacement[0].toUpperCase() + replacement.slice(1);
+    return replacement;
+}
+
+function getReplacementPool(group, config) {
+    return Array.isArray(config.replacementGroups?.[group])
+        ? config.replacementGroups[group]
+        : [];
+}
+
+function enforceWordReplacementsOnResponse(response) {
+    if (!response || typeof response !== 'object') {
+        return applyWordReplacements(response);
+    }
+
+    if (Array.isArray(response.choices)) {
+        response.choices.forEach((choice) => {
+            if (typeof choice?.text === 'string') {
+                choice.text = applyWordReplacements(choice.text);
+            }
+            enforceWordReplacementsOnMessage(choice?.message);
+            enforceWordReplacementsOnMessage(choice?.delta);
+        });
+    }
+
+    if (Array.isArray(response.output_text)) {
+        response.output_text = response.output_text.map(segment =>
+            typeof segment === 'string' ? applyWordReplacements(segment) : segment,
+        );
+    }
+
+    if (Array.isArray(response.output)) {
+        response.output.forEach((item) => {
+            if (Array.isArray(item?.content)) {
+                item.content = item.content.map(enforceWordReplacementsOnContentBlock);
+            } else if (typeof item?.content === 'string') {
+                item.content = applyWordReplacements(item.content);
+            }
+        });
+    }
+
+    if (response?.response_metadata?.raw_response) {
+        response.response_metadata.raw_response = enforceWordReplacementsOnResponse(
+            response.response_metadata.raw_response,
+        );
+    }
+
+    return applyWordReplacementsDeep(response);
+}
+
+function enforceWordReplacementsOnMessage(message) {
+    if (!message || typeof message !== 'object') {
+        return;
+    }
+
+    if (typeof message.content === 'string') {
+        message.content = applyWordReplacements(message.content);
+    } else if (Array.isArray(message.content)) {
+        message.content = message.content.map(enforceWordReplacementsOnContentBlock);
+    }
+
+    if (typeof message.reasoning_content === 'string') {
+        message.reasoning_content = applyWordReplacements(message.reasoning_content);
+    } else if (Array.isArray(message.reasoning_content)) {
+        message.reasoning_content = message.reasoning_content.map(enforceWordReplacementsOnContentBlock);
+    }
+}
+
+function enforceWordReplacementsOnContentBlock(block) {
+    if (block === null || block === undefined) {
+        return block;
+    }
+
+    if (typeof block === 'string') {
+        return applyWordReplacements(block);
+    }
+
+    if (typeof block !== 'object') {
+        return block;
+    }
+
+    if (typeof block.text === 'string') {
+        block.text = applyWordReplacements(block.text);
+    }
+
+    if (typeof block.refusal === 'string') {
+        block.refusal = applyWordReplacements(block.refusal);
+    }
+
+    if (Array.isArray(block.content)) {
+        block.content = block.content.map(enforceWordReplacementsOnContentBlock);
+    }
+
+    return block;
+}
+
+function applyWordReplacementsDeep(value, seen = new WeakSet()) {
+    if (typeof value === 'string') {
+        return applyWordReplacements(value);
+    }
+
+    if (value === null || typeof value !== 'object') {
+        return value;
+    }
+
+    if (seen.has(value)) {
+        return value;
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i += 1) {
+            value[i] = applyWordReplacementsDeep(value[i], seen);
+        }
+        return value;
+    }
+
+    Object.keys(value).forEach((key) => {
+        value[key] = applyWordReplacementsDeep(value[key], seen);
+    });
+
+    return value;
+}
+
+function createWordReplacementStream() {
+    const decoder = new TextDecoder();
+    // Prime replacement rules so we can size the buffer for cross-chunk matches
+    applyWordReplacements('');
+    const carryLimit = Math.max(longestReplacementSourceLength || 0, 16);
+    let carry = '';
+
+    return new Transform({
+        transform(chunk, _encoding, callback) {
+            try {
+                const decoded = carry + decoder.decode(chunk, { stream: true });
+                const keepLength = Math.min(carryLimit, decoded.length);
+                const processLength = decoded.length - keepLength;
+                const head = processLength > 0 ? decoded.slice(0, processLength) : '';
+                carry = decoded.slice(processLength);
+                if (head) {
+                    this.push(applyWordReplacements(head));
+                }
+                callback();
+            } catch (error) {
+                callback(error);
+            }
+        },
+        flush(callback) {
+            try {
+                const remaining = carry + decoder.decode();
+                if (remaining) {
+                    this.push(applyWordReplacements(remaining));
+                }
+                callback();
+            } catch (error) {
+                callback(error);
+            }
+        },
+    });
+}
+
+function forwardFetchResponseWithWordReplacements(from, to) {
+    let statusCode = from.status;
+    let statusText = from.statusText;
+
+    if (!from.ok) {
+        console.warn(`Streaming request failed with status ${statusCode} ${statusText}`);
+    }
+
+    if (statusCode === 401) {
+        statusCode = 400;
+    }
+
+    to.statusCode = statusCode;
+    to.statusMessage = statusText;
+
+    if (from.body && to.socket) {
+        const transformStream = createWordReplacementStream();
+        from.body.pipe(transformStream).pipe(to);
+
+        const endResponse = () => {
+            if (!to.writableEnded) {
+                to.end();
+            }
+        };
+
+        to.socket.on('close', function () {
+            if (typeof from.body.destroy === 'function') {
+                from.body.destroy();
+            }
+            transformStream.end();
+            endResponse();
+        });
+
+        transformStream.on('end', function () {
+            console.info('Streaming request finished');
+            endResponse();
+        });
+
+        transformStream.on('error', function (error) {
+            console.error('Word replacement streaming error:', error);
+            endResponse();
+        });
+    } else {
+        to.end();
+    }
+}
+
+function sendWithWordReplacements(res, payload) {
+    return res.send(enforceWordReplacementsOnResponse(payload));
+}
 
 /**
  * Gets OpenRouter transforms based on the request.
@@ -282,7 +635,7 @@ async function sendClaudeRequest(request, response) {
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -297,7 +650,7 @@ async function sendClaudeRequest(request, response) {
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
-            return response.send(reply);
+            return sendWithWordReplacements(response, reply);
         }
     } catch (error) {
         console.error(color.red(`Error communicating with Claude: ${error}\n${divider}`));
@@ -533,7 +886,7 @@ async function sendMakerSuiteRequest(request, response) {
         if (stream) {
             try {
                 // Pipe remote SSE stream to Express response
-                forwardFetchResponse(generateResponse, response);
+                forwardFetchResponseWithWordReplacements(generateResponse, response);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -573,7 +926,7 @@ async function sendMakerSuiteRequest(request, response) {
 
             // Wrap it back to OAI format
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
-            return response.send(reply);
+            return sendWithWordReplacements(response, reply);
         }
     } catch (error) {
         console.error(`Error communicating with ${apiName} API:`, error);
@@ -642,7 +995,7 @@ async function sendAI21Request(request, response) {
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -652,7 +1005,7 @@ async function sendAI21Request(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI21 response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with AI21 API: ', error);
@@ -732,7 +1085,7 @@ async function sendMistralAIRequest(request, response) {
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -742,7 +1095,7 @@ async function sendMistralAIRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('MistralAI response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with MistralAI API: ', error);
@@ -831,7 +1184,7 @@ async function sendCohereRequest(request, response) {
 
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
-            forwardFetchResponse(stream, response);
+            forwardFetchResponseWithWordReplacements(stream, response);
         } else {
             const generateResponse = await fetch(apiUrl, config);
             if (!generateResponse.ok) {
@@ -842,7 +1195,7 @@ async function sendCohereRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Cohere response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with Cohere API: ', error);
@@ -938,7 +1291,7 @@ async function sendDeepSeekRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -948,7 +1301,7 @@ async function sendDeepSeekRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('DeepSeek response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with DeepSeek API: ', error);
@@ -1055,7 +1408,7 @@ async function sendXaiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1065,7 +1418,7 @@ async function sendXaiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('xAI response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with xAI API: ', error);
@@ -1160,7 +1513,7 @@ async function sendAimlapiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1170,7 +1523,7 @@ async function sendAimlapiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI/ML API response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with AI/ML API: ', error);
@@ -1260,7 +1613,7 @@ async function sendElectronHubRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1270,7 +1623,7 @@ async function sendElectronHubRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Electron Hub response:', generateResponseJson);
-            return response.send(generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson);
         }
     }
     catch (error) {
@@ -1356,14 +1709,14 @@ async function sendAzureOpenAIRequest(request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            return forwardFetchResponse(fetchResponse, response);
+            return forwardFetchResponseWithWordReplacements(fetchResponse, response);
         }
 
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Azure OpenAI response:', json);
-            return response.send(json);
+            return sendWithWordReplacements(response, json);
         }
 
         const text = await fetchResponse.text();
@@ -2090,14 +2443,14 @@ router.post('/generate', function (request, response) {
 
             if (request.body.stream) {
                 console.info('Streaming request in progress');
-                forwardFetchResponse(fetchResponse, response);
+                forwardFetchResponseWithWordReplacements(fetchResponse, response);
                 return;
             }
 
             if (fetchResponse.ok) {
                 /** @type {any} */
                 let json = await fetchResponse.json();
-                response.send(json);
+                sendWithWordReplacements(response, json);
                 console.debug('Chat Completion response:', json);
             } else {
                 await handleErrorResponse(fetchResponse);

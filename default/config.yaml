@@ -235,6 +235,10 @@ enableDownloadableTokenizers: true
 # -- OPENAI CONFIGURATION --
 # A placeholder message to use in strict prompt post-processing mode when the prompt doesn't start with a user message
 promptPlaceholder: "[Start a new chat]"
+# -- WORD REPLACEMENT CONFIGURATION --
+wordReplacement:
+  # Enables the server-side regex that swaps euphemisms with spicier language
+  enabled: true
 openai:
   # Will send a random user ID to OpenAI completion API
   randomizeUserId: false

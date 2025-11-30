@@ -344,6 +344,7 @@ export const settingsToUpdate = {
     continue_postfix: ['#continue_postfix', 'continue_postfix', false, false],
     function_calling: ['#openai_function_calling', 'function_calling', true, false],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
+    word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
     service_tier: ['#openai_service_tier', 'service_tier', false, false],
@@ -446,6 +447,7 @@ const default_settings = {
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
+    word_replacement_enabled: true,
     verbosity: verbosity_types.medium,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
@@ -544,6 +546,7 @@ const oai_settings = {
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
+    word_replacement_enabled: true,
     verbosity: verbosity_types.medium,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
@@ -2444,6 +2447,7 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
         'char_name': name2,
         'group_names': getGroupNames(),
         'include_reasoning': Boolean(oai_settings.show_thoughts),
+        'word_replacement_enabled': Boolean(oai_settings.word_replacement_enabled),
         'reasoning_effort': getReasoningEffort(),
         'enable_web_search': Boolean(oai_settings.enable_web_search),
         'request_images': Boolean(oai_settings.request_images),
@@ -3944,6 +3948,7 @@ function loadOpenAISettings(data, settings) {
     oai_settings.bypass_status_check = settings.bypass_status_check ?? default_settings.bypass_status_check;
     oai_settings.vertexai_express_project_id = settings.vertexai_express_project_id ?? default_settings.vertexai_express_project_id;
     oai_settings.show_thoughts = settings.show_thoughts ?? default_settings.show_thoughts;
+    oai_settings.word_replacement_enabled = settings.word_replacement_enabled ?? default_settings.word_replacement_enabled;
     oai_settings.verbosity = settings.verbosity ?? default_settings.verbosity;
     oai_settings.service_tier = settings.service_tier ?? default_settings.service_tier;
     oai_settings.reasoning_effort = settings.reasoning_effort ?? default_settings.reasoning_effort;
@@ -4101,6 +4106,7 @@ function loadOpenAISettings(data, settings) {
     $('#seed_openai').val(oai_settings.seed);
     $('#n_openai').val(oai_settings.n);
     $('#openai_show_thoughts').prop('checked', oai_settings.show_thoughts);
+    $('#word_replacement_enabled').prop('checked', oai_settings.word_replacement_enabled);
     $('#openai_enable_web_search').prop('checked', oai_settings.enable_web_search);
     $('#openai_request_images').prop('checked', oai_settings.request_images);
     $('#bind_preset_to_connection').prop('checked', oai_settings.bind_preset_to_connection);
@@ -4391,6 +4397,7 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
         continue_postfix: settings.continue_postfix,
         function_calling: settings.function_calling,
         show_thoughts: settings.show_thoughts,
+        word_replacement_enabled: settings.word_replacement_enabled,
         reasoning_effort: settings.reasoning_effort,
         enable_web_search: settings.enable_web_search,
         request_images: settings.request_images,
@@ -6822,6 +6829,11 @@ export function initOpenAI() {
 
     $('#openai_show_thoughts').on('input', function () {
         oai_settings.show_thoughts = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#word_replacement_enabled').on('input', function () {
+        oai_settings.word_replacement_enabled = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

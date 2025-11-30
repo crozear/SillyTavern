@@ -148,11 +148,30 @@ const WORD_REPLACEMENT_CONFIG = {
     },
 };
 
+function areWordReplacementsEnabled(requestValue) {
+    const configEnabled = getConfigValue('wordReplacement.enabled', true, 'boolean');
+    return typeof requestValue === 'boolean' ? requestValue : configEnabled;
+}
+
+function resolveWordReplacementEnabledOverride(request) {
+    return request?.body?.word_replacement_enabled;
+}
+
+function getWordReplacementEnabled(request) {
+    return areWordReplacementsEnabled(resolveWordReplacementEnabledOverride(request));
+}
+
 let cachedReplacementRules = null;
 let longestReplacementSourceLength = 0;
+const replacementCycles = new Map();
 
-function applyWordReplacements(text) {
+function applyWordReplacements(text, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
     if (!text || typeof text !== 'string') {
+        return text;
+    }
+
+    if (!isEnabled) {
         return text;
     }
 
@@ -202,8 +221,19 @@ function pickReplacement(group, config) {
     if (!Array.isArray(pool) || !pool.length) {
         return null;
     }
-    const index = Math.floor(Math.random() * pool.length);
-    return pool[index];
+
+    if (!replacementCycles.has(group)) {
+        replacementCycles.set(group, { pool: [...pool], remaining: [...pool] });
+    }
+
+    const cycle = replacementCycles.get(group);
+    if (!cycle.remaining.length) {
+        cycle.remaining = [...cycle.pool];
+    }
+
+    const index = Math.floor(Math.random() * cycle.remaining.length);
+    const [choice] = cycle.remaining.splice(index, 1);
+    return choice;
 }
 
 function escapeForRegex(term) {
@@ -227,33 +257,38 @@ function getReplacementPool(group, config) {
         : [];
 }
 
-function enforceWordReplacementsOnResponse(response) {
+function enforceWordReplacementsOnResponse(response, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return response;
+    }
+
     if (!response || typeof response !== 'object') {
-        return applyWordReplacements(response);
+        return applyWordReplacements(response, isEnabled);
     }
 
     if (Array.isArray(response.choices)) {
         response.choices.forEach((choice) => {
             if (typeof choice?.text === 'string') {
-                choice.text = applyWordReplacements(choice.text);
+                choice.text = applyWordReplacements(choice.text, isEnabled);
             }
-            enforceWordReplacementsOnMessage(choice?.message);
-            enforceWordReplacementsOnMessage(choice?.delta);
+            enforceWordReplacementsOnMessage(choice?.message, isEnabled);
+            enforceWordReplacementsOnMessage(choice?.delta, isEnabled);
         });
     }
 
     if (Array.isArray(response.output_text)) {
         response.output_text = response.output_text.map(segment =>
-            typeof segment === 'string' ? applyWordReplacements(segment) : segment,
+            typeof segment === 'string' ? applyWordReplacements(segment, isEnabled) : segment,
         );
     }
 
     if (Array.isArray(response.output)) {
         response.output.forEach((item) => {
             if (Array.isArray(item?.content)) {
-                item.content = item.content.map(enforceWordReplacementsOnContentBlock);
+                item.content = item.content.map(block => enforceWordReplacementsOnContentBlock(block, isEnabled));
             } else if (typeof item?.content === 'string') {
-                item.content = applyWordReplacements(item.content);
+                item.content = applyWordReplacements(item.content, isEnabled);
             }
         });
     }
@@ -261,37 +296,48 @@ function enforceWordReplacementsOnResponse(response) {
     if (response?.response_metadata?.raw_response) {
         response.response_metadata.raw_response = enforceWordReplacementsOnResponse(
             response.response_metadata.raw_response,
+            isEnabled,
         );
     }
 
-    return applyWordReplacementsDeep(response);
+    return applyWordReplacementsDeep(response, new WeakSet(), isEnabled);
 }
 
-function enforceWordReplacementsOnMessage(message) {
+function enforceWordReplacementsOnMessage(message, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return;
+    }
+
     if (!message || typeof message !== 'object') {
         return;
     }
 
     if (typeof message.content === 'string') {
-        message.content = applyWordReplacements(message.content);
+        message.content = applyWordReplacements(message.content, isEnabled);
     } else if (Array.isArray(message.content)) {
-        message.content = message.content.map(enforceWordReplacementsOnContentBlock);
+        message.content = message.content.map(block => enforceWordReplacementsOnContentBlock(block, isEnabled));
     }
 
     if (typeof message.reasoning_content === 'string') {
-        message.reasoning_content = applyWordReplacements(message.reasoning_content);
+        message.reasoning_content = applyWordReplacements(message.reasoning_content, isEnabled);
     } else if (Array.isArray(message.reasoning_content)) {
-        message.reasoning_content = message.reasoning_content.map(enforceWordReplacementsOnContentBlock);
+        message.reasoning_content = message.reasoning_content.map(block => enforceWordReplacementsOnContentBlock(block, isEnabled));
     }
 }
 
-function enforceWordReplacementsOnContentBlock(block) {
+function enforceWordReplacementsOnContentBlock(block, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return block;
+    }
+
     if (block === null || block === undefined) {
         return block;
     }
 
     if (typeof block === 'string') {
-        return applyWordReplacements(block);
+        return applyWordReplacements(block, isEnabled);
     }
 
     if (typeof block !== 'object') {
@@ -299,23 +345,28 @@ function enforceWordReplacementsOnContentBlock(block) {
     }
 
     if (typeof block.text === 'string') {
-        block.text = applyWordReplacements(block.text);
+        block.text = applyWordReplacements(block.text, isEnabled);
     }
 
     if (typeof block.refusal === 'string') {
-        block.refusal = applyWordReplacements(block.refusal);
+        block.refusal = applyWordReplacements(block.refusal, isEnabled);
     }
 
     if (Array.isArray(block.content)) {
-        block.content = block.content.map(enforceWordReplacementsOnContentBlock);
+        block.content = block.content.map(nextBlock => enforceWordReplacementsOnContentBlock(nextBlock, isEnabled));
     }
 
     return block;
 }
 
-function applyWordReplacementsDeep(value, seen = new WeakSet()) {
+function applyWordReplacementsDeep(value, seen = new WeakSet(), enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return value;
+    }
+
     if (typeof value === 'string') {
-        return applyWordReplacements(value);
+        return applyWordReplacements(value, isEnabled);
     }
 
     if (value === null || typeof value !== 'object') {
@@ -329,22 +380,31 @@ function applyWordReplacementsDeep(value, seen = new WeakSet()) {
 
     if (Array.isArray(value)) {
         for (let i = 0; i < value.length; i += 1) {
-            value[i] = applyWordReplacementsDeep(value[i], seen);
+            value[i] = applyWordReplacementsDeep(value[i], seen, isEnabled);
         }
         return value;
     }
 
     Object.keys(value).forEach((key) => {
-        value[key] = applyWordReplacementsDeep(value[key], seen);
+        value[key] = applyWordReplacementsDeep(value[key], seen, isEnabled);
     });
 
     return value;
 }
 
-function createWordReplacementStream() {
+function createWordReplacementStream(enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return new Transform({
+            transform(chunk, _encoding, callback) {
+                callback(null, chunk);
+            },
+        });
+    }
+
     const decoder = new TextDecoder();
     // Prime replacement rules so we can size the buffer for cross-chunk matches
-    applyWordReplacements('');
+    applyWordReplacements('', isEnabled);
     const carryLimit = Math.max(longestReplacementSourceLength || 0, 16);
     let carry = '';
 
@@ -357,7 +417,7 @@ function createWordReplacementStream() {
                 const head = processLength > 0 ? decoded.slice(0, processLength) : '';
                 carry = decoded.slice(processLength);
                 if (head) {
-                    this.push(applyWordReplacements(head));
+                    this.push(applyWordReplacements(head, isEnabled));
                 }
                 callback();
             } catch (error) {
@@ -368,7 +428,7 @@ function createWordReplacementStream() {
             try {
                 const remaining = carry + decoder.decode();
                 if (remaining) {
-                    this.push(applyWordReplacements(remaining));
+                    this.push(applyWordReplacements(remaining, isEnabled));
                 }
                 callback();
             } catch (error) {
@@ -378,7 +438,8 @@ function createWordReplacementStream() {
     });
 }
 
-function forwardFetchResponseWithWordReplacements(from, to) {
+function forwardFetchResponseWithWordReplacements(from, to, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
     let statusCode = from.status;
     let statusText = from.statusText;
 
@@ -394,39 +455,67 @@ function forwardFetchResponseWithWordReplacements(from, to) {
     to.statusMessage = statusText;
 
     if (from.body && to.socket) {
-        const transformStream = createWordReplacementStream();
-        from.body.pipe(transformStream).pipe(to);
-
         const endResponse = () => {
             if (!to.writableEnded) {
                 to.end();
             }
         };
 
-        to.socket.on('close', function () {
+        const destroySource = () => {
             if (typeof from.body.destroy === 'function') {
                 from.body.destroy();
             }
-            transformStream.end();
-            endResponse();
-        });
+        };
 
-        transformStream.on('end', function () {
-            console.info('Streaming request finished');
-            endResponse();
-        });
+        if (!isEnabled) {
+            from.body.pipe(to);
 
-        transformStream.on('error', function (error) {
-            console.error('Word replacement streaming error:', error);
-            endResponse();
-        });
+            to.socket.on('close', function () {
+                destroySource();
+                endResponse();
+            });
+
+            from.body.on('end', function () {
+                console.info('Streaming request finished');
+                endResponse();
+            });
+
+            from.body.on('error', function (error) {
+                console.error('Streaming request error:', error);
+                endResponse();
+            });
+        } else {
+            const transformStream = createWordReplacementStream(isEnabled);
+            from.body.pipe(transformStream).pipe(to);
+
+            to.socket.on('close', function () {
+                destroySource();
+                transformStream.end();
+                endResponse();
+            });
+
+            transformStream.on('end', function () {
+                console.info('Streaming request finished');
+                endResponse();
+            });
+
+            transformStream.on('error', function (error) {
+                console.error('Word replacement streaming error:', error);
+                endResponse();
+            });
+        }
     } else {
         to.end();
     }
 }
 
-function sendWithWordReplacements(res, payload) {
-    return res.send(enforceWordReplacementsOnResponse(payload));
+function sendWithWordReplacements(res, payload, enabled) {
+    const isEnabled = areWordReplacementsEnabled(enabled);
+    if (!isEnabled) {
+        return res.send(payload);
+    }
+
+    return res.send(enforceWordReplacementsOnResponse(payload, isEnabled));
 }
 
 /**
@@ -487,6 +576,7 @@ async function sendClaudeRequest(request, response) {
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE);
     const divider = '-'.repeat(process.stdout.columns);
     const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
     let cachingAtDepth = getConfigValue('claude.cachingAtDepth', -1, 'number');
     // Disabled if not an integer or negative
     if (!Number.isInteger(cachingAtDepth) || cachingAtDepth < 0) {
@@ -637,7 +727,7 @@ async function sendClaudeRequest(request, response) {
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -652,7 +742,7 @@ async function sendClaudeRequest(request, response) {
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
-            return sendWithWordReplacements(response, reply);
+            return sendWithWordReplacements(response, reply, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error(color.red(`Error communicating with Claude: ${error}\n${divider}`));
@@ -672,6 +762,7 @@ async function sendMakerSuiteRequest(request, response) {
     const apiName = useVertexAi ? 'Google Vertex AI' : 'Google AI Studio';
     let apiUrl;
     let apiKey;
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     let authHeader;
     let authType;
@@ -888,7 +979,7 @@ async function sendMakerSuiteRequest(request, response) {
         if (stream) {
             try {
                 // Pipe remote SSE stream to Express response
-                forwardFetchResponseWithWordReplacements(generateResponse, response);
+                forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -928,7 +1019,7 @@ async function sendMakerSuiteRequest(request, response) {
 
             // Wrap it back to OAI format
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
-            return sendWithWordReplacements(response, reply);
+            return sendWithWordReplacements(response, reply, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error(`Error communicating with ${apiName} API:`, error);
@@ -951,6 +1042,7 @@ async function sendAI21Request(request, response) {
         console.warn('AI21 API key is missing.');
         return response.status(400).send({ error: true });
     }
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     const bodyParams = {};
     const controller = new AbortController();
@@ -997,7 +1089,7 @@ async function sendAI21Request(request, response) {
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1007,7 +1099,7 @@ async function sendAI21Request(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI21 response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with AI21 API: ', error);
@@ -1027,6 +1119,7 @@ async function sendAI21Request(request, response) {
 async function sendMistralAIRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_MISTRAL).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MISTRALAI);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey) {
         console.warn('MistralAI API key is missing.');
@@ -1087,7 +1180,7 @@ async function sendMistralAIRequest(request, response) {
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1097,7 +1190,7 @@ async function sendMistralAIRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('MistralAI response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with MistralAI API: ', error);
@@ -1116,6 +1209,7 @@ async function sendMistralAIRequest(request, response) {
  */
 async function sendCohereRequest(request, response) {
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
     const controller = new AbortController();
     request.socket.removeAllListeners('close');
     request.socket.on('close', function () {
@@ -1186,7 +1280,7 @@ async function sendCohereRequest(request, response) {
 
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
-            forwardFetchResponseWithWordReplacements(stream, response);
+            forwardFetchResponseWithWordReplacements(stream, response, wordReplacementsEnabled);
         } else {
             const generateResponse = await fetch(apiUrl, config);
             if (!generateResponse.ok) {
@@ -1197,7 +1291,7 @@ async function sendCohereRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Cohere response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with Cohere API: ', error);
@@ -1217,6 +1311,7 @@ async function sendCohereRequest(request, response) {
 async function sendDeepSeekRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_DEEPSEEK).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.DEEPSEEK);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey && !request.body.reverse_proxy) {
         console.warn('DeepSeek API key is missing.');
@@ -1293,7 +1388,7 @@ async function sendDeepSeekRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1303,7 +1398,7 @@ async function sendDeepSeekRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('DeepSeek response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with DeepSeek API: ', error);
@@ -1323,6 +1418,7 @@ async function sendDeepSeekRequest(request, response) {
 async function sendXaiRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_XAI).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.XAI);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey && !request.body.reverse_proxy) {
         console.warn('xAI API key is missing.');
@@ -1410,7 +1506,7 @@ async function sendXaiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1420,7 +1516,7 @@ async function sendXaiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('xAI response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with xAI API: ', error);
@@ -1440,6 +1536,7 @@ async function sendXaiRequest(request, response) {
 async function sendAimlapiRequest(request, response) {
     const apiUrl = API_AIMLAPI;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AIMLAPI);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey) {
         console.warn('AI/ML API key is missing.');
@@ -1515,7 +1612,7 @@ async function sendAimlapiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1525,7 +1622,7 @@ async function sendAimlapiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI/ML API response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     } catch (error) {
         console.error('Error communicating with AI/ML API: ', error);
@@ -1545,6 +1642,7 @@ async function sendAimlapiRequest(request, response) {
 async function sendElectronHubRequest(request, response) {
     const apiUrl = API_ELECTRONHUB;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.ELECTRONHUB);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey) {
         console.warn('Electron Hub key is missing.');
@@ -1615,7 +1713,7 @@ async function sendElectronHubRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponseWithWordReplacements(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1625,7 +1723,7 @@ async function sendElectronHubRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Electron Hub response:', generateResponseJson);
-            return sendWithWordReplacements(response, generateResponseJson);
+            return sendWithWordReplacements(response, generateResponseJson, wordReplacementsEnabled);
         }
     }
     catch (error) {
@@ -1647,6 +1745,7 @@ async function sendAzureOpenAIRequest(request, response) {
     // 1. GATHER & VALIDATE SETTINGS
     const { azure_base_url, azure_deployment_name, azure_api_version } = request.body;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.AZURE_OPENAI);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
     if (!azure_base_url || !azure_deployment_name || !azure_api_version || !apiKey) {
         return response.status(400).send({
             error: {
@@ -1711,14 +1810,14 @@ async function sendAzureOpenAIRequest(request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            return forwardFetchResponseWithWordReplacements(fetchResponse, response);
+            return forwardFetchResponseWithWordReplacements(fetchResponse, response, wordReplacementsEnabled);
         }
 
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Azure OpenAI response:', json);
-            return sendWithWordReplacements(response, json);
+            return sendWithWordReplacements(response, json, wordReplacementsEnabled);
         }
 
         const text = await fetchResponse.text();
@@ -2092,6 +2191,7 @@ router.post('/bias', async function (request, response) {
 
 router.post('/generate', function (request, response) {
     if (!request.body) return response.status(400).send({ error: true });
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     const postProcessingType = request.body.custom_prompt_post_processing;
     if (Array.isArray(request.body.messages) && postProcessingType) {
@@ -2445,14 +2545,14 @@ router.post('/generate', function (request, response) {
 
             if (request.body.stream) {
                 console.info('Streaming request in progress');
-                forwardFetchResponseWithWordReplacements(fetchResponse, response);
+                forwardFetchResponseWithWordReplacements(fetchResponse, response, wordReplacementsEnabled);
                 return;
             }
 
             if (fetchResponse.ok) {
                 /** @type {any} */
                 let json = await fetchResponse.json();
-                sendWithWordReplacements(response, json);
+                sendWithWordReplacements(response, json, wordReplacementsEnabled);
                 console.debug('Chat Completion response:', json);
             } else {
                 await handleErrorResponse(fetchResponse);

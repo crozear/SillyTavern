@@ -104,8 +104,63 @@ const WORD_REPLACEMENT_CONFIG = {
         iOrgasm: ["I orgasm", "I climax", "I ejaculate"],
         orgasmIng: ["ejaculating", "climaxing", "orgasming"],
         orgasmEd: ["orgasmed", "climaxed", "ejaculated"],
-        orgasm: ["climax", "ejaculate"],
-        yourSens: ["your heat", "your warmth", "your arousal"],
+        // now also catch “orgasm” as a noun directly
+        orgasm: ["climax", "ejaculate", "orgasm", "orgasms"],
+
+        // state-of-arousal words bound to pronouns to avoid generic “heat” matches
+        yourSens: [
+            "your heat",
+            "your warmth",
+            "your arousal",
+            "your desire",
+            "your need",
+            "your want",
+            "your excitement",
+        ],
+        mySens: [
+            "my heat",
+            "my warmth",
+            "my arousal",
+            "my desire",
+            "my need",
+            "my want",
+            "my excitement",
+        ],
+        herSens: [
+            "her heat",
+            "her warmth",
+            "her arousal",
+            "her desire",
+            "her need",
+            "her want",
+            "her excitement",
+        ],
+        hisSens: [
+            "his heat",
+            "his warmth",
+            "his arousal",
+            "his desire",
+            "his need",
+            "his want",
+            "his excitement",
+        ],
+        theirSens: [
+            "their heat",
+            "their warmth",
+            "their arousal",
+            "their desire",
+            "their need",
+            "their want",
+            "their excitement",
+        ],
+
+        // bare “arousal” used as a noun (e.g. “his arousal spiked”)
+        arousalNoun: ["arousal"],
+
+        // “chest (if female)” – only in clearly gendered phrasing so you don’t
+        // turn “knife in his chest” into “knife in his tits”
+        chestFemale: ["her chest", "her bare chest"],
+
         yourLength: ["your length"],
         sensations: ["ache"],
         actionsPenetration: ["insert", "penetrate"],
@@ -140,7 +195,20 @@ const WORD_REPLACEMENT_CONFIG = {
         orgasmIng: ["cumming"],
         orgasmEd: ["came"],
         orgasm: ["cum"],
+
+        // pronoun-specific arousal replacements so grammar stays clean
         yourSens: ["your horniness", "your neediness"],
+        mySens: ["my horniness", "my neediness"],
+        herSens: ["her horniness", "her neediness"],
+        hisSens: ["his horniness", "his neediness"],
+        theirSens: ["their horniness", "their neediness"],
+
+        // generic “arousal” → horniness/need
+        arousalNoun: ["horniness", "need", "neediness", "lust"],
+
+        // female chest → tits/breasts/nipples, keeping the pronoun
+        chestFemale: ["her tits", "her breasts", "her nipples"],
+
         yourLength: ["your cock", "your dick"],
         sensations: ["throb", "quiver", "swollen", "needy", "raw"],
         actionsPenetration: ["fuck", "hammer", "pound", "pump"],
@@ -402,22 +470,272 @@ function createWordReplacementStream(enabled) {
         });
     }
 
-    const decoder = new TextDecoder();
-    // Prime replacement rules so we can size the buffer for cross-chunk matches
-    applyWordReplacements('', isEnabled);
-    const carryLimit = Math.max(longestReplacementSourceLength || 0, 16);
-    let carry = '';
+    // Ensure replacement rules are initialized so longestReplacementSourceLength is valid
+    if (!cachedReplacementRules) {
+        cachedReplacementRules = buildReplacementRules(WORD_REPLACEMENT_CONFIG);
+        longestReplacementSourceLength = cachedReplacementRules.reduce(
+            (max, rule) => Math.max(max, rule.maxLength),
+            0,
+        );
+    }
 
-    return new Transform({
+    const carryLimit = Math.max((longestReplacementSourceLength || 0) - 1, 64);
+    const decoder = new TextDecoder();
+
+    // Track per-choice, per-field buffers so phrases split across events still match
+    const fieldBuffers = new Map();
+    let pending = '';
+
+    function bufferKey(choiceIndex, field) {
+        return `${choiceIndex}:${field}`;
+    }
+
+    function isWordChar(ch) {
+        return /\w/.test(ch); // same notion of "word" as \b in your regexes
+    }
+
+    // Cache multi-word source phrases so we don't cut through them
+    let multiWordPhrases = null;
+    let maxPhraseLength = 0;
+
+    function initMultiWordPhrases() {
+        if (multiWordPhrases) return;
+
+        multiWordPhrases = [];
+        maxPhraseLength = 0;
+
+        const groups = WORD_REPLACEMENT_CONFIG?.sourceGroups || {};
+        Object.values(groups).forEach((words) => {
+            if (!Array.isArray(words)) return;
+            words.forEach((w) => {
+                const term = String(w || '').trim();
+                // Only care about phrases with whitespace (multi-word)
+                if (term && /\s/.test(term)) {
+                    multiWordPhrases.push(term);
+                    if (term.length > maxPhraseLength) {
+                        maxPhraseLength = term.length;
+                    }
+                }
+            });
+        });
+    }
+
+    // Returns true if the cut index is *inside* any multi-word source phrase
+    function inMiddleOfSourcePhrase(str, cutIndex) {
+        initMultiWordPhrases();
+        if (!multiWordPhrases.length) return false;
+
+        const start = Math.max(0, cutIndex - maxPhraseLength);
+        const end = Math.min(str.length, cutIndex + maxPhraseLength);
+        const region = str.slice(start, end);
+
+        for (const phrase of multiWordPhrases) {
+            const rel = region.indexOf(phrase);
+            if (rel === -1) continue;
+
+            const phraseStart = start + rel;
+            const phraseEnd = phraseStart + phrase.length;
+
+            // cutIndex is between characters, so forbid cuts strictly inside the phrase
+            if (phraseStart < cutIndex && cutIndex < phraseEnd) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function appendAndExtract(choiceIndex, field, text = '', flush = false) {
+        const key = bufferKey(choiceIndex, field);
+        const current = fieldBuffers.get(key) || '';
+        let combined = current + (text || '');
+
+        if (flush) {
+            fieldBuffers.delete(key);
+            return combined ? applyWordReplacements(combined, isEnabled) : '';
+        }
+
+        if (!combined) {
+            return '';
+        }
+
+        // If we haven't exceeded the carry limit yet, just buffer everything.
+        if (combined.length <= carryLimit) {
+            fieldBuffers.set(key, combined);
+            return '';
+        }
+
+        // Start by cutting so that we keep the last `carryLimit` chars.
+        let cut = combined.length - carryLimit;
+
+        // Move `cut` left until it's at a safe boundary:
+        // - not in the middle of a word
+        // - not in the middle of a multi-word replacement phrase
+        while (
+            cut > 0 &&
+            (
+                (isWordChar(combined[cut - 1]) && isWordChar(combined[cut])) ||
+                inMiddleOfSourcePhrase(combined, cut)
+            )
+        ) {
+            cut--;
+        }
+
+        // If we couldn't find a safe cut position, keep everything for next time.
+        if (cut <= 0) {
+            fieldBuffers.set(key, combined);
+            return '';
+        }
+
+        const head = combined.slice(0, cut);
+        const tail = combined.slice(cut);
+
+        fieldBuffers.set(key, tail);
+
+        return applyWordReplacements(head, isEnabled);
+    }
+
+    function flushChoice(choiceIndex) {
+        return {
+            content: appendAndExtract(choiceIndex, 'content', '', true),
+            reasoning_content: appendAndExtract(choiceIndex, 'reasoning_content', '', true),
+            text: appendAndExtract(choiceIndex, 'text', '', true),
+        };
+    }
+
+    function flushAll(push) {
+        const keys = Array.from(fieldBuffers.keys());
+        const byChoice = new Map();
+
+        keys.forEach((key) => {
+            const [choiceIndex, field] = key.split(':');
+            const idx = Number(choiceIndex) || 0;
+            const flushed = appendAndExtract(idx, field, '', true);
+            if (!flushed) return;
+            if (!byChoice.has(idx)) {
+                byChoice.set(idx, {});
+            }
+            byChoice.get(idx)[field] = flushed;
+        });
+
+        byChoice.forEach((fields, idx) => {
+            const choice = { index: idx, delta: {} };
+            if (fields.content) choice.delta.content = fields.content;
+            if (fields.reasoning_content) choice.delta.reasoning_content = fields.reasoning_content;
+            if (fields.text) choice.text = fields.text;
+            push(`data: ${JSON.stringify({ choices: [choice] })}\n\n`);
+        });
+    }
+
+    function processChoice(choice) {
+        const idx = Number.isInteger(choice?.index) ? choice.index : 0;
+        choice.delta = choice.delta || {};
+
+        if (typeof choice.text === 'string') {
+            const emitted = appendAndExtract(idx, 'text', choice.text, false);
+            if (emitted) {
+                choice.text = emitted;
+            } else {
+                delete choice.text;
+            }
+        }
+
+        if (typeof choice.delta.content === 'string') {
+            const emitted = appendAndExtract(idx, 'content', choice.delta.content, false);
+            if (emitted) {
+                choice.delta.content = emitted;
+            } else {
+                delete choice.delta.content;
+            }
+        } else if (Array.isArray(choice.delta.content)) {
+            const updated = [];
+            choice.delta.content.forEach((block) => {
+                if (typeof block === 'string') {
+                    const emitted = appendAndExtract(idx, 'content', block, false);
+                    if (emitted) updated.push(emitted);
+                    return;
+                }
+                if (block?.type === 'text' && typeof block.text === 'string') {
+                    const emitted = appendAndExtract(idx, 'content', block.text, false);
+                    if (emitted) {
+                        updated.push({ ...block, text: emitted });
+                    }
+                    return;
+                }
+                updated.push(block);
+            });
+
+            if (updated.length) {
+                choice.delta.content = updated;
+            } else {
+                delete choice.delta.content;
+            }
+        }
+
+        if (typeof choice.delta.reasoning_content === 'string') {
+            const emitted = appendAndExtract(idx, 'reasoning_content', choice.delta.reasoning_content, false);
+            if (emitted) {
+                choice.delta.reasoning_content = emitted;
+            } else {
+                delete choice.delta.reasoning_content;
+            }
+        } else if (Array.isArray(choice.delta.reasoning_content)) {
+            const updated = [];
+            choice.delta.reasoning_content.forEach((block) => {
+                if (typeof block === 'string') {
+                    const emitted = appendAndExtract(idx, 'reasoning_content', block, false);
+                    if (emitted) updated.push(emitted);
+                    return;
+                }
+                if (block?.type === 'text' && typeof block.text === 'string') {
+                    const emitted = appendAndExtract(idx, 'reasoning_content', block.text, false);
+                    if (emitted) {
+                        updated.push({ ...block, text: emitted });
+                    }
+                    return;
+                }
+                updated.push(block);
+            });
+
+            if (updated.length) {
+                choice.delta.reasoning_content = updated;
+            } else {
+                delete choice.delta.reasoning_content;
+            }
+        }
+
+        // When the stream signals completion, flush any buffered tail for this choice
+        if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+            const extras = flushChoice(idx);
+            if (extras.content) {
+                if (typeof choice.delta.content === 'string' || choice.delta.content === undefined) {
+                    choice.delta.content = (choice.delta.content || '') + extras.content;
+                } else if (Array.isArray(choice.delta.content)) {
+                    choice.delta.content.push(extras.content);
+                }
+            }
+            if (extras.reasoning_content) {
+                if (typeof choice.delta.reasoning_content === 'string' || choice.delta.reasoning_content === undefined) {
+                    choice.delta.reasoning_content = (choice.delta.reasoning_content || '') + extras.reasoning_content;
+                } else if (Array.isArray(choice.delta.reasoning_content)) {
+                    choice.delta.reasoning_content.push(extras.reasoning_content);
+                }
+            }
+            if (extras.text) {
+                choice.text = (choice.text || '') + extras.text;
+            }
+        }
+    }
+
+    const transformStream = new Transform({
         transform(chunk, _encoding, callback) {
             try {
-                const decoded = carry + decoder.decode(chunk, { stream: true });
-                const keepLength = Math.min(carryLimit, decoded.length);
-                const processLength = decoded.length - keepLength;
-                const head = processLength > 0 ? decoded.slice(0, processLength) : '';
-                carry = decoded.slice(processLength);
-                if (head) {
-                    this.push(applyWordReplacements(head, isEnabled));
+                pending += decoder.decode(chunk, { stream: true });
+                let eventEnd;
+                while ((eventEnd = pending.indexOf('\n\n')) !== -1) {
+                    const eventChunk = pending.slice(0, eventEnd);
+                    pending = pending.slice(eventEnd + 2);
+                    processEvent.call(this, eventChunk);
                 }
                 callback();
             } catch (error) {
@@ -426,16 +744,53 @@ function createWordReplacementStream(enabled) {
         },
         flush(callback) {
             try {
-                const remaining = carry + decoder.decode();
+                const remaining = pending + decoder.decode();
                 if (remaining) {
-                    this.push(applyWordReplacements(remaining, isEnabled));
+                    processEvent.call(this, remaining);
                 }
+                flushAll((event) => this.push(event));
                 callback();
             } catch (error) {
                 callback(error);
             }
         },
     });
+
+    function processEvent(eventChunk) {
+        const trimmed = eventChunk.trimEnd();
+        const lines = trimmed.split('\n');
+        const dataLineIndex = lines.findIndex(line => line.startsWith('data:'));
+
+        if (dataLineIndex === -1) {
+            this.push(`${eventChunk}\n\n`);
+            return;
+        }
+
+        const payload = lines[dataLineIndex].replace(/^data:\s*/, '').trim();
+
+        if (payload === '[DONE]') {
+            flushAll((event) => this.push(event));
+            this.push('data: [DONE]\n\n');
+            return;
+        }
+
+        let data;
+        try {
+            data = JSON.parse(payload);
+        } catch (error) {
+            this.push(`${eventChunk}\n\n`);
+            return;
+        }
+
+        if (Array.isArray(data?.choices)) {
+            data.choices.forEach(processChoice);
+        }
+
+        lines[dataLineIndex] = `data: ${JSON.stringify(data)}`;
+        this.push(`${lines.join('\n')}\n\n`);
+    }
+
+    return transformStream;
 }
 
 function forwardFetchResponseWithWordReplacements(from, to, enabled) {
@@ -2102,6 +2457,13 @@ router.post('/status', async function (request, statusResponse) {
             statusResponse.end();
         }
     }
+});
+
+router.post('/word-replacements', function (request, response) {
+    const enabled = getWordReplacementEnabled(request);
+    const value = request.body?.value;
+    const processed = enforceWordReplacementsOnResponse(value, enabled);
+    return response.send({ value: processed });
 });
 
 router.post('/bias', async function (request, response) {

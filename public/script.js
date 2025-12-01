@@ -599,6 +599,32 @@ export function getRequestHeaders({ omitContentType = false } = {}) {
     return headers;
 }
 
+async function applyServerWordReplacements(text) {
+    if (main_api !== 'openai' || !oai_settings?.word_replacement_enabled || typeof text !== 'string') {
+        return text;
+    }
+
+    try {
+        const response = await fetch('/api/chat-completions/word-replacements', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                value: text,
+                word_replacement_enabled: Boolean(oai_settings.word_replacement_enabled),
+            }),
+        });
+
+        if (!response.ok) {
+            return text;
+        }
+
+        const data = await response.json();
+        return typeof data?.value === 'string' ? data.value : text;
+    } catch {
+        return text;
+    }
+}
+
 export function getSlideToggleOptions() {
     return {
         miliseconds: animation_duration * 1.5,
@@ -3104,6 +3130,7 @@ class StreamingProcessor {
         }
 
         this.isFinished = true;
+        this.result = await applyServerWordReplacements(this.result);
         return this.result;
     }
 }
@@ -4459,6 +4486,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             const instructions = getLastJailbreakInstructions();
             generate_data = {
                 prompt: prompt,
+                word_replacement_enabled: Boolean(oai_settings.word_replacement_enabled),
                 ...(instructions ? { instructions } : {}),
             };
 

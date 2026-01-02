@@ -58,3 +58,13 @@ yarn.lock
 *.code-workspace
 st-agent-proxy/v1/chat/completions/server.js
 src/endpoints/backends/Get models.js
+st-agent-proxy/v1/chat/completions/Perplexity/00_Core_Behavior.txt
+st-agent-proxy/v1/chat/completions/Perplexity/01_Mindspace_Switches.txt
+st-agent-proxy/v1/chat/completions/Perplexity/02_Writing_Style.txt
+st-agent-proxy/v1/chat/completions/Perplexity/03_Narrative_Fiction.txt
+st-agent-proxy/v1/chat/completions/Perplexity/04_Spatial_Framework.txt
+st-agent-proxy/v1/chat/completions/Perplexity/05_Forbidden_Workshop.txt
+st-agent-proxy/v1/chat/completions/Perplexity/combine_files.py
+st-agent-proxy/v1/chat/completions/Perplexity/Combined.md
+st-agent-proxy/v1/chat/completions/Perplexity/seperate.md
+st-agent-proxy/v1/chat/completions/Perplexity/split_md_files.py

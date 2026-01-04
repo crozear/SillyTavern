@@ -489,8 +489,8 @@ const oai_settings = {
     personality_format: default_personality_format,
     openai_model: 'gpt-4-turbo',
     claude_model: 'claude-sonnet-4-5',
-    google_model: 'gemini-2.5-pro',
-    vertexai_model: 'gemini-2.5-pro',
+    google_model: 'gemini-3-flash-preview',
+    vertexai_model: 'gemini-3-flash-preview',
     ai21_model: 'jamba-large',
     mistralai_model: 'mistral-large-latest',
     cohere_model: 'command-r-plus',
@@ -2302,9 +2302,9 @@ function getReasoningEffort() {
             case reasoning_effort_types.min:
                 return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(oai_settings.chat_completion_source) && /^gpt-5/.test(getChatCompletionModel())
                     ? reasoning_effort_types.min
-                    : reasoning_effort_types.low;
-            case reasoning_effort_types.max:
-                return reasoning_effort_types.high;
+                    : [chat_completion_sources.MAKERSUITE].includes(oai_settings.chat_completion_source)
+                        ? reasoning_effort_types.minimal
+                        : reasoning_effort_types.low;
             default:
                 return oai_settings.reasoning_effort;
         }
@@ -2595,6 +2595,10 @@ async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = 
     }
 
     if (isGoogle || isVertexAI) {
+        if (oai_settings.google_model.includes('3')) {
+        delete generate_data.frequency_penalty;
+        delete generate_data.presence_penalty;
+        }
         const stopStringsLimit = 5;
         generate_data['top_k'] = Number(oai_settings.top_k_openai);
         generate_data['stop'] = getCustomStoppingStrings(stopStringsLimit).slice(0, stopStringsLimit).filter(x => x.length >= 1 && x.length <= 16);

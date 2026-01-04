@@ -1055,103 +1055,72 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream) 
  * Calculate the Google budget tokens for a given reasoning effort.
  * @param {number} maxTokens Maximum tokens
  * @param {string} reasoningEffort Reasoning effort
- * @param {string} model Model name
  * @returns {number?} Budget tokens
  */
-export function calculateGoogleBudgetTokens(maxTokens, reasoningEffort, model) {
-    function getFlashBudget() {
-        let budgetTokens = 0;
-
-        switch (reasoningEffort) {
-            case REASONING_EFFORT.auto:
-                return -1;
-            case REASONING_EFFORT.min:
-                return 0;
-            case REASONING_EFFORT.low:
-                budgetTokens = Math.floor(maxTokens * 0.1);
-                break;
-            case REASONING_EFFORT.medium:
-                budgetTokens = Math.floor(maxTokens * 0.25);
-                break;
-            case REASONING_EFFORT.high:
-                budgetTokens = Math.floor(maxTokens * 0.5);
-                break;
-            case REASONING_EFFORT.max:
-                budgetTokens = maxTokens;
-                break;
-        }
-
-        budgetTokens = Math.min(budgetTokens, 24576);
-
-        return budgetTokens;
+/**
+ * Calculate the Google thinking budget tokens for a given reasoning effort.
+ * @param {number} maxTokens Maximum tokens
+ * @param {string} reasoningEffort Reasoning effort
+ * @returns {number?} Budget tokens
+ */
+export function calculateGoogleBudgetTokens(maxTokens, reasoningEffort) {
+    if (!Number.isFinite(maxTokens)) {
+        return null;
     }
 
-    function getFlashLiteBudget() {
-        let budgetTokens = 0;
+    let budgetTokens = 0;
 
-        switch (reasoningEffort) {
-            case REASONING_EFFORT.auto:
-                return -1;
-            case REASONING_EFFORT.min:
-                return 0;
-            case REASONING_EFFORT.low:
-                budgetTokens = Math.floor(maxTokens * 0.1);
-                break;
-            case REASONING_EFFORT.medium:
-                budgetTokens = Math.floor(maxTokens * 0.25);
-                break;
-            case REASONING_EFFORT.high:
-                budgetTokens = Math.floor(maxTokens * 0.5);
-                break;
-            case REASONING_EFFORT.max:
-                budgetTokens = maxTokens;
-                break;
-        }
-
-        budgetTokens = Math.max(Math.min(budgetTokens, 24576), 512);
-
-        return budgetTokens;
+    switch (reasoningEffort) {
+        case REASONING_EFFORT.auto:
+            return null;
+        case REASONING_EFFORT.min:
+            budgetTokens = Math.floor(maxTokens * 0.05);
+            break;
+        case REASONING_EFFORT.low:
+            budgetTokens = Math.floor(maxTokens * 0.1);
+            break;
+        case REASONING_EFFORT.medium:
+            budgetTokens = Math.floor(maxTokens * 0.25);
+            break;
+        case REASONING_EFFORT.high:
+            budgetTokens = Math.floor(maxTokens * 0.5);
+            break;
+        case REASONING_EFFORT.max:
+            budgetTokens = maxTokens;
+            break;
     }
 
-    function getProBudget() {
-        let budgetTokens = 0;
+    budgetTokens = Math.min(budgetTokens, 24576);
 
-        switch (reasoningEffort) {
-            case REASONING_EFFORT.auto:
-                return -1;
-            case REASONING_EFFORT.min:
-                budgetTokens = 128;
-                break;
-            case REASONING_EFFORT.low:
-                budgetTokens = Math.floor(maxTokens * 0.1);
-                break;
-            case REASONING_EFFORT.medium:
-                budgetTokens = Math.floor(maxTokens * 0.25);
-                break;
-            case REASONING_EFFORT.high:
-                budgetTokens = Math.floor(maxTokens * 0.5);
-                break;
-            case REASONING_EFFORT.max:
-                budgetTokens = maxTokens;
-                break;
-        }
+    return budgetTokens;
+}
 
-        budgetTokens = Math.max(Math.min(budgetTokens, 32768), 128);
-
-        return budgetTokens;
+/**
+ * Calculate the Google thinking level for Gemini 3 models.
+ * @param {string} reasoningEffort Reasoning effort
+ * @param {string} model Model id
+ * @returns {string?} Thinking level enum value
+ */
+export function calculateGoogleThinkingLevel(reasoningEffort, model) {
+    if (!model) {
+        return null;
     }
 
-    if (model.includes('flash-lite')) {
-        return getFlashLiteBudget();
-    }
+    const isFlash = /gemini-3-flash/.test(model);
 
-    if (model.includes('flash')) {
-        return getFlashBudget();
+    switch (reasoningEffort) {
+        case REASONING_EFFORT.auto:
+            return null;
+        case REASONING_EFFORT.min:
+            return isFlash ? 'MINIMAL' : 'LOW';
+        case REASONING_EFFORT.low:
+            return 'LOW';
+        case REASONING_EFFORT.medium:
+            return isFlash ? 'MEDIUM' : 'HIGH';
+        case REASONING_EFFORT.high:
+        case REASONING_EFFORT.max:
+            return 'HIGH';
+        default:
+            return null;
     }
-
-    if (model.includes('pro')) {
-        return getProBudget();
-    }
-
-    return null;
 }

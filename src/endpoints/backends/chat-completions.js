@@ -37,6 +37,7 @@ import {
     getPromptNames,
     calculateClaudeBudgetTokens,
     calculateGoogleBudgetTokens,
+    calculateGoogleThinkingLevel,
     postProcessPrompt,
     PROMPT_PROCESSING_TYPE,
     addAssistantPrefix,
@@ -1166,6 +1167,8 @@ async function sendMakerSuiteRequest(request, response) {
         temperature: request.body.temperature,
         topP: request.body.top_p,
         topK: request.body.top_k || undefined,
+        presencePenalty: request.body.presence_penalty,
+        frequencyPenalty: request.body.frequency_penalty,
         responseMimeType: responseMimeType,
         responseSchema: responseSchema,
         seed: request.body.seed,
@@ -1181,7 +1184,7 @@ async function sendMakerSuiteRequest(request, response) {
             'gemini-2.5-flash-image',
         ];
 
-        const isThinkingConfigModel = m => /^gemini-2.5-(flash|pro)/.test(m) && !/-image(-preview)?$/.test(m);
+        const isThinkingConfigModel = m => /^gemini-(2.5|3)-(flash|pro)/.test(m) && !/-image$/.test(m);
 
         const noSearchModels = [
             'gemini-2.0-flash-lite',
@@ -1229,15 +1232,23 @@ async function sendMakerSuiteRequest(request, response) {
         if (isThinkingConfigModel(model)) {
             const thinkingConfig = { includeThoughts: includeReasoning };
 
-            const thinkingBudget = calculateGoogleBudgetTokens(generationConfig.maxOutputTokens, reasoningEffort, model);
-            if (Number.isInteger(thinkingBudget)) {
-                thinkingConfig.thinkingBudget = thinkingBudget;
-            }
+            const usesThinkingLevel = /^gemini-3-/.test(model);
+            if (usesThinkingLevel) {
+                const thinkingLevel = calculateGoogleThinkingLevel(reasoningEffort, model);
+                if (thinkingLevel) {
+                    thinkingConfig.thinkingLevel = thinkingLevel;
+                }
+            } else {
+                const thinkingBudget = calculateGoogleBudgetTokens(generationConfig.maxOutputTokens, reasoningEffort, model);
+                if (Number.isInteger(thinkingBudget)) {
+                    thinkingConfig.thinkingBudget = thinkingBudget;
+                }
 
-            // Vertex doesn't allow mixing disabled thinking with includeThoughts
-            if (useVertexAi && thinkingBudget === 0 && thinkingConfig.includeThoughts) {
-                console.info('Thinking budget is 0, but includeThoughts is true. Thoughts will not be included in the response.');
-                thinkingConfig.includeThoughts = false;
+                // Vertex doesn't allow mixing disabled thinking with includeThoughts
+                if (useVertexAi && thinkingBudget === 0 && thinkingConfig.includeThoughts) {
+                    console.info('Thinking budget is 0, but includeThoughts is true. Thoughts will not be included in the response.');
+                    thinkingConfig.includeThoughts = false;
+                }
             }
 
             generationConfig.thinkingConfig = thinkingConfig;

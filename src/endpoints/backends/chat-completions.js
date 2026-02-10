@@ -40,7 +40,6 @@ import {
     getPromptNames,
     calculateClaudeBudgetTokens,
     calculateGoogleBudgetTokens,
-    calculateGoogleThinkingLevel,
     postProcessPrompt,
     PROMPT_PROCESSING_TYPE,
     addAssistantPrefix,

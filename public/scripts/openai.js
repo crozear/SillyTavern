@@ -235,7 +235,7 @@ const openrouter_middleout_types = {
 };
 
 export const reasoning_effort_types = {
-    none: 'none',
+    auto: 'auto',
     low: 'low',
     medium: 'medium',
     high: 'high',
@@ -259,7 +259,7 @@ export const service_tier_types = {
     flex: 'flex',
     default: 'default',
     priority: 'priority',
-}
+};
 
 const sensitiveFields = [
     'reverse_proxy',
@@ -468,7 +468,6 @@ const default_settings = {
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
     word_replacement_enabled: true,
-    verbosity: verbosity_types.medium,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
     verbosity: verbosity_levels.auto,
@@ -2452,9 +2451,9 @@ function getReasoningEffort(settings = null, model = null) {
             case reasoning_effort_types.min:
                 return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5/.test(model)
                     ? reasoning_effort_types.min
-                    : [chat_completion_sources.MAKERSUITE].includes(oai_settings.chat_completion_source)
-                        ? reasoning_effort_types.minimal
-                        : reasoning_effort_types.low;
+                    : reasoning_effort_types.low;
+            case reasoning_effort_types.max:
+                return reasoning_effort_types.high;
             default:
                 return settings.reasoning_effort;
         }
@@ -2477,18 +2476,6 @@ function getReasoningEffort(settings = null, model = null) {
     return reasoningEffort;
 }
 
-function getServiceTier() {
-    const value = String(oai_settings.service_tier ?? '').toLowerCase();
-    switch (value) {
-        case service_tier_types.flex:
-        case service_tier_types.default:
-        case service_tier_types.priority:
-            return value;
-        default:
-            return undefined;
-    }
-}
-
 /**
  * Get the verbosity from chat completion settings
  * @param {ChatCompletionSettings} settings Chat completion settings
@@ -2496,19 +2483,13 @@ function getServiceTier() {
  */
 function getVerbosity(settings = null) {
     settings = settings ?? oai_settings;
-    const value = String(settings.verbosity ?? '').toLowerCase();
-    switch (value) {
-        case verbosity_types.none:
-        case verbosity_types.low:
-        case verbosity_types.medium:
-        case verbosity_types.high:
-            return value;
-        default:
-            return undefined;
-    }
+
     if (settings.verbosity === verbosity_levels.auto) {
         return undefined;
     }
+
+    // TODO: Adjust verbosity based on model capabilities
+    return settings.verbosity;
 }
 
 /**
@@ -2521,31 +2502,12 @@ function getVerbosity(settings = null) {
  * @returns {Promise<object>} Final generation parameters object appropriate for the chat completion source
  */
 
-async function sendOpenAIRequest(type, payload, signal, { jsonSchema = null } = {}) {
-    // Provide default abort signal
-    if (!signal) {
-        signal = new AbortController().signal;
-    }
-    // HACK: Filter out null and non-object messages
-    let instructions;
-    let messages = payload;
-
-    if (!Array.isArray(payload)) {
-        if (Array.isArray(payload?.prompt)) {
-            messages = payload.prompt;
-        } else if (Array.isArray(payload?.messages)) {
-            messages = payload.messages;
-        }
-        instructions = typeof payload?.instructions === 'string' ? payload.instructions : undefined;
-    }
-
 export async function createGenerationParameters(settings, model, type, messages, { jsonSchema = null } = {}) {
-
+    // HACK: Filter out null and non-object messages
     if (!Array.isArray(messages)) {
         throw new Error('messages must be an array');
     }
 
-    instructions = typeof instructions === 'string' ? instructions : undefined;
     messages = messages.filter(msg => msg && typeof msg === 'object');
 
     // "OpenAI-like" sources
@@ -2568,7 +2530,6 @@ export async function createGenerationParameters(settings, model, type, messages
         chat_completion_sources.NANOGPT,
         chat_completion_sources.XAI,
         chat_completion_sources.POLLINATIONS,
-    const isOpenAIReverseProxy = isOAI && Boolean(oai_settings.reverse_proxy);
         chat_completion_sources.AIMLAPI,
         chat_completion_sources.VERTEXAI,
         chat_completion_sources.MAKERSUITE,
@@ -2879,12 +2840,10 @@ export async function createGenerationParameters(settings, model, type, messages
             delete generate_data.logit_bias;
             delete generate_data.stop;
         } else {
-            if (!isOpenAIReverseProxy) {
-                delete generate_data.temperature;
-                delete generate_data.top_p;
-                delete generate_data.frequency_penalty;
-                delete generate_data.presence_penalty;
-            }
+            delete generate_data.temperature;
+            delete generate_data.top_p;
+            delete generate_data.frequency_penalty;
+            delete generate_data.presence_penalty;
             delete generate_data.logit_bias;
             delete generate_data.stop;
         }
@@ -3196,7 +3155,7 @@ function getPromptVariablesForProxy() {
         return null;
     }
 
-    const result = {};
+    const result = /** @type {Record<string, string>} */ ({});
 
     /**
      * @param {Record<string, unknown>|undefined|null} source

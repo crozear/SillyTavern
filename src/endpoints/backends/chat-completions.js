@@ -3135,6 +3135,10 @@ router.post('/generate', async function (request, response) {
             }
         }
 
+        if (request.body.service_tier && [CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
+                bodyParams['service_tier'] = request.body.service_tier;
+        }
+
         if (!apiKey && !request.body.reverse_proxy && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
             console.warn('OpenAI API key is missing.');
             return response.status(400).send({ error: true });
@@ -3228,7 +3232,7 @@ router.post('/generate', async function (request, response) {
             const json = await fetchResponse.json();
             sendWithWordReplacements(response, json, wordReplacementsEnabled);
             console.debug('Chat Completion response:', json);
-            return response.send(json);
+            return; // Response already sent by sendWithWordReplacements
         } else {
             const responseText = await fetchResponse.text();
             const errorData = tryParse(responseText);

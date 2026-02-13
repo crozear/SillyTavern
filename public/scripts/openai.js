@@ -2632,6 +2632,7 @@ export async function createGenerationParameters(settings, model, type, messages
         'request_image_aspect_ratio': String(settings.request_image_aspect_ratio),
         'custom_prompt_post_processing': settings.custom_prompt_post_processing,
         'verbosity': getVerbosity(settings),
+        'service_tier': settings.service_tier,
     };
 
     if (settings.chat_completion_source === chat_completion_sources.AZURE_OPENAI) {

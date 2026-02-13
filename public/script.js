@@ -5100,6 +5100,19 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 messages: oaiMessages,
                 messageExamples: oaiMessageExamples,
             }, dryRun);
+
+            // Handle null prompt from prepareOpenAIMessages
+            if (prompt === null) {
+                if (dryRun) {
+                    // Expected behavior: dry run without character should skip
+                    console.debug('Dry run skipped: no active character');
+                    prompt = []; // Set to empty array to prevent downstream errors
+                } else {
+                    // Unexpected: should not happen in real generation
+                    throw new Error('Cannot generate messages: no active character selected');
+                }
+            }
+
             const instructions = getLastJailbreakInstructions();
             generate_data = {
                 prompt: prompt,

@@ -214,6 +214,33 @@ async function* parseStreamData(json) {
         }
         return;
     }
+    // OpenAI Responses API
+    else if (typeof json.type === 'string' && json.type.startsWith('response.')) {
+        if (json.type === 'response.output_text.delta' && typeof json.delta === 'string' && json.delta.length > 0) {
+            for (let i = 0; i < json.delta.length; i++) {
+                const str = json.delta[i];
+                yield {
+                    data: { ...json, delta: str },
+                    chunk: str,
+                };
+            }
+            return;
+        }
+        if ((json.type === 'response.reasoning_summary_text.delta' || json.type === 'response.reasoning_content_text.delta') && typeof json.delta === 'string' && json.delta.length > 0) {
+            for (let i = 0; i < json.delta.length; i++) {
+                const str = json.delta[i];
+                yield {
+                    data: { ...json, delta: str },
+                    chunk: str,
+                    reasoning: true,
+                };
+            }
+            return;
+        }
+        // Other Responses API events — pass through silently
+        yield { data: json, chunk: '' };
+        return;
+    }
     // OpenAI-likes
     else if (Array.isArray(json.choices)) {
         const isNotPrimary = json?.choices?.[0]?.index > 0;

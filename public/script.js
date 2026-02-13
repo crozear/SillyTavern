@@ -6063,6 +6063,13 @@ export function extractMessageFromData(data, activeApi = null) {
             case 'novel':
                 return data.output;
             case 'openai':
+                // OpenAI Responses API format
+                if (Array.isArray(data?.output)) {
+                    const msgItem = data.output.find(item => item.type === 'message');
+                    const text = msgItem?.content?.find(c => c.type === 'output_text')?.text;
+                    if (text) return text;
+                }
+                // Chat Completions / other formats
                 return data?.content?.find(p => p.type === 'text')?.text ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.text ?? data?.message?.content?.[0]?.text ?? data?.message?.tool_plan ?? '';
             default:
                 return '';

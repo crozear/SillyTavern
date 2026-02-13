@@ -12,6 +12,7 @@ import {
     GEMINI_SAFETY,
     OPENAI_REASONING_EFFORT_MAP,
     OPENAI_REASONING_EFFORT_MODELS,
+    OPENAI_RESPONSES_API_MODELS,
     OPENAI_VERBOSITY_MODELS,
     OPENROUTER_HEADERS,
     VERTEX_SAFETY,
@@ -430,6 +431,14 @@ function enforceWordReplacementsOnResponse(response, enabled) {
                 item.content = item.content.map(block => enforceWordReplacementsOnContentBlock(block, isEnabled));
             } else if (typeof item?.content === 'string') {
                 item.content = applyWordReplacements(item.content, isEnabled);
+            }
+            // Handle reasoning summary text in Responses API output
+            if (Array.isArray(item?.summary)) {
+                item.summary.forEach((summaryBlock) => {
+                    if (summaryBlock?.type === 'summary_text' && typeof summaryBlock.text === 'string') {
+                        summaryBlock.text = applyWordReplacements(summaryBlock.text, isEnabled);
+                    }
+                });
             }
         });
     }
@@ -859,8 +868,54 @@ function createWordReplacementStream(enabled) {
             data.choices.forEach(processChoice);
         }
 
+        // Handle OpenAI Responses API streaming events
+        if (typeof data?.type === 'string' && data.type.startsWith('response.')) {
+            processResponsesApiEvent(data);
+
+            // Flush buffered content before forwarding terminal events
+            if (data.type === 'response.completed' || data.type === 'response.incomplete' || data.type === 'response.failed') {
+                const extras = flushChoice(0);
+                if (extras.reasoning_content) {
+                    this.push(`data: ${JSON.stringify({
+                        type: 'response.reasoning_summary_text.delta',
+                        delta: extras.reasoning_content,
+                    })}\n\n`);
+                }
+                if (extras.content) {
+                    this.push(`data: ${JSON.stringify({
+                        type: 'response.output_text.delta',
+                        delta: extras.content,
+                    })}\n\n`);
+                }
+            }
+        }
+
         lines[dataLineIndex] = `data: ${JSON.stringify(data)}`;
         this.push(`${lines.join('\n')}\n\n`);
+    }
+
+    /**
+     * Apply word replacements to OpenAI Responses API streaming events.
+     * @param {object} data The parsed SSE event data
+     */
+    function processResponsesApiEvent(data) {
+        if (typeof data.delta !== 'string') return;
+
+        if (data.type === 'response.output_text.delta') {
+            const emitted = appendAndExtract(0, 'content', data.delta, false);
+            if (emitted) {
+                data.delta = emitted;
+            } else {
+                data.delta = '';
+            }
+        } else if (data.type === 'response.reasoning_summary_text.delta' || data.type === 'response.reasoning_content_text.delta') {
+            const emitted = appendAndExtract(0, 'reasoning_content', data.delta, false);
+            if (emitted) {
+                data.delta = emitted;
+            } else {
+                data.delta = '';
+            }
+        }
     }
 
     return transformStream;
@@ -2836,6 +2891,67 @@ router.post('/bias', async function (request, response) {
     }
 });
 
+/**
+ * Converts a chat completions request body in-place to the OpenAI Responses API format.
+ * @param {object} requestBody The request body to transform
+ */
+function convertToResponsesApiRequest(requestBody) {
+    // messages → input (the formats are compatible per OpenAI docs)
+    if (requestBody.messages) {
+        requestBody.input = requestBody.messages;
+        delete requestBody.messages;
+    }
+
+    // max_tokens / max_completion_tokens → max_output_tokens
+    if (requestBody.max_completion_tokens) {
+        requestBody.max_output_tokens = requestBody.max_completion_tokens;
+        delete requestBody.max_completion_tokens;
+    } else if (requestBody.max_tokens) {
+        requestBody.max_output_tokens = requestBody.max_tokens;
+    }
+    delete requestBody.max_tokens;
+
+    // reasoning_effort → reasoning.effort, always request summaries
+    requestBody.reasoning = {
+        ...(requestBody.reasoning_effort ? { effort: requestBody.reasoning_effort } : {}),
+        summary: 'auto',
+    };
+    delete requestBody.reasoning_effort;
+
+    // response_format → text.format, verbosity → text.verbosity
+    if (requestBody.response_format || requestBody.verbosity) {
+        requestBody.text = {};
+        if (requestBody.response_format) {
+            requestBody.text.format = requestBody.response_format;
+            delete requestBody.response_format;
+        }
+        if (requestBody.verbosity) {
+            requestBody.text.verbosity = requestBody.verbosity;
+            delete requestBody.verbosity;
+        }
+    }
+
+    // Request reasoning summaries so we can show thinking content
+//    requestBody.include = requestBody.include || [];
+//    if (!requestBody.include.includes('reasoning.encrypted_content')) {
+//        requestBody.include.push('reasoning.encrypted_content');
+//    }
+
+    // Don't store conversations on OpenAI's servers
+    requestBody.store = true;
+
+    // Remove unsupported parameters
+    delete requestBody.n;
+    delete requestBody.logit_bias;
+    delete requestBody.logprobs;
+    delete requestBody.top_logprobs;
+    delete requestBody.prompt;
+    delete requestBody.frequency_penalty;
+    delete requestBody.presence_penalty;
+    delete requestBody.stop;
+    delete requestBody.seed;
+}
+
 router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
@@ -2894,7 +3010,7 @@ router.post('/generate', async function (request, response) {
             bodyParams.verbosity = request.body.verbosity;
         }
 
-        if (request.body.reverse_proxy && request.body.instructions) {
+        if (request.body.instructions) {
             bodyParams.instructions = request.body.instructions;
         }
 
@@ -3149,10 +3265,17 @@ router.post('/generate', async function (request, response) {
             bodyParams['stop'] = request.body.stop;
         }
 
+        // Determine if we should use the OpenAI Responses API for this model
+        const useResponsesApi = !isTextCompletion
+            && request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI
+            && OPENAI_RESPONSES_API_MODELS.some(m => request.body.model?.startsWith(m));
+
         const textPrompt = isTextCompletion ? convertTextCompletionPrompt(request.body.messages) : '';
-        const endpointUrl = isTextCompletion && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.OPENROUTER ?
-            `${apiUrl}/completions` :
-            `${apiUrl}/chat/completions`;
+        const endpointUrl = useResponsesApi
+            ? `${apiUrl}/responses`
+            : isTextCompletion && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.OPENROUTER
+                ? `${apiUrl}/completions`
+                : `${apiUrl}/chat/completions`;
 
         const controller = new AbortController();
         request.socket.removeAllListeners('close');
@@ -3205,6 +3328,11 @@ router.post('/generate', async function (request, response) {
             excludeKeysByYaml(requestBody, request.body.custom_exclude_body);
         }
 
+        // Transform request body for the OpenAI Responses API
+        if (useResponsesApi) {
+            convertToResponsesApiRequest(requestBody);
+        }
+
         /** @type {import('node-fetch').RequestInit} */
         const config = {
             method: 'post',
@@ -3217,12 +3345,15 @@ router.post('/generate', async function (request, response) {
             signal: controller.signal,
         };
 
-        console.debug('Chat Completion request:', requestBody);
+        console.debug(useResponsesApi ? 'Responses API request:' : 'Chat Completion request:', requestBody);
 
         const fetchResponse = await fetch(endpointUrl, config);
 
             if (request.body.stream) {
                 console.info('Streaming request in progress');
+                if (useResponsesApi) {
+                    response.setHeader('X-Response-Format', 'responses');
+                }
                 forwardFetchResponseWithWordReplacements(fetchResponse, response, wordReplacementsEnabled);
                 return;
             }
@@ -3230,8 +3361,11 @@ router.post('/generate', async function (request, response) {
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
+            if (useResponsesApi) {
+                response.setHeader('X-Response-Format', 'responses');
+            }
             sendWithWordReplacements(response, json, wordReplacementsEnabled);
-            console.debug('Chat Completion response:', json);
+            console.debug(useResponsesApi ? 'Responses API response:' : 'Chat Completion response:', json);
             return; // Response already sent by sendWithWordReplacements
         } else {
             const responseText = await fetchResponse.text();

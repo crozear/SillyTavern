@@ -2633,6 +2633,7 @@ export async function createGenerationParameters(settings, model, type, messages
         'custom_prompt_post_processing': settings.custom_prompt_post_processing,
         'verbosity': getVerbosity(settings),
         'service_tier': settings.service_tier,
+        'instructions': getLastJailbreakInstructions() || undefined,
     };
 
     if (settings.chat_completion_source === chat_completion_sources.AZURE_OPENAI) {
@@ -2897,6 +2898,8 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
+    const isResponsesApi = response.headers.get('X-Response-Format') === 'responses';
+
     if (stream) {
         const eventStream = getEventSourceStream();
         response.body.pipeThrough(eventStream);
@@ -2914,17 +2917,32 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
 
+                // Responses API: terminal events signal end of stream
+                if (isResponsesApi && (parsed?.type === 'response.completed' || parsed?.type === 'response.incomplete' || parsed?.type === 'response.failed')) {
+                    // Final fallback: extract reasoning from the full response if not already captured
+                    if (oai_settings.show_thoughts && !state.reasoning && Array.isArray(parsed?.response?.output)) {
+                        const reasoningItem = parsed.response.output.find(item => item.type === 'reasoning');
+                        const rText = reasoningItem?.content?.filter(c => c.type === 'reasoning_text')?.map(c => c.text)?.join('\n\n') || '';
+                        const sText = reasoningItem?.summary?.filter(s => s.type === 'summary_text')?.map(s => s.text)?.join('\n\n') || '';
+                        state.reasoning = rText || sText;
+                    }
+                    yield { text, swipes, logprobs: null, toolCalls, state };
+                    return;
+                }
+
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
                     const swipeIndex = parsed.choices[0].index - 1;
                     // FIXME: state.reasoning should be an array to support multi-swipe
                     swipes[swipeIndex] = (swipes[swipeIndex] || '') + getStreamingReply(parsed, state, { overrideShowThoughts: false });
                 } else {
-                    text += getStreamingReply(parsed, state);
+                    text += getStreamingReply(parsed, state, { isResponsesApi });
                 }
 
-                ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
+                if (!isResponsesApi) {
+                    ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
+                }
 
-                yield { text, swipes: swipes, logprobs: parseChatCompletionLogprobs(parsed), toolCalls: toolCalls, state: state };
+                yield { text, swipes: swipes, logprobs: isResponsesApi ? null : parseChatCompletionLogprobs(parsed), toolCalls: toolCalls, state: state };
             }
         };
     }
@@ -2959,9 +2977,10 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
  * @param {object} [options] Additional options
  * @param {string?} [options.chatCompletionSource] Chat completion source
  * @param {boolean?} [options.overrideShowThoughts] Override show thoughts
+ * @param {boolean?} [options.isResponsesApi] Whether this is an OpenAI Responses API stream
  * @returns {string} The reply extracted from the response data
  */
-export function getStreamingReply(data, state, { chatCompletionSource = null, overrideShowThoughts = null } = {}) {
+export function getStreamingReply(data, state, { chatCompletionSource = null, overrideShowThoughts = null, isResponsesApi = false } = {}) {
     const chat_completion_source = chatCompletionSource ?? oai_settings.chat_completion_source;
     const show_thoughts = overrideShowThoughts ?? oai_settings.show_thoughts;
 
@@ -3032,6 +3051,34 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         }
         const content = data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
         return Array.isArray(content) ? content.map(x => x.text).filter(x => x).join('') : content;
+    } else if (isResponsesApi && typeof data?.type === 'string') {
+        // OpenAI Responses API streaming events
+        if (data.type === 'response.output_text.delta') {
+            return data.delta || '';
+        }
+        // Reasoning content and summary deltas
+        if (data.type === 'response.reasoning_summary_text.delta' || data.type === 'response.reasoning_content_text.delta') {
+            if (show_thoughts) {
+                state.reasoning += data.delta || '';
+            }
+            return '';
+        }
+        // Completed reasoning item — extract content if not already streamed
+        if (data.type === 'response.output_item.done' && data.item?.type === 'reasoning' && show_thoughts) {
+            if (!state.reasoning) {
+                const reasoningText = data.item.content
+                    ?.filter(c => c.type === 'reasoning_text')
+                    ?.map(c => c.text)
+                    ?.join('\n\n') || '';
+                const summaryText = data.item.summary
+                    ?.filter(s => s.type === 'summary_text')
+                    ?.map(s => s.text)
+                    ?.join('\n\n') || '';
+                state.reasoning = reasoningText || summaryText;
+            }
+        }
+        // All other Responses API events (response.created, response.output_item.added, etc.)
+        return '';
     } else {
         return data.choices?.[0]?.delta?.content ?? data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? '';
     }

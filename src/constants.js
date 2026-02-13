@@ -482,6 +482,12 @@ export const OPENAI_REASONING_EFFORT_MAP = {
     min: 'minimal',
 };
 
+/**
+ * Models that should use the OpenAI Responses API (/v1/responses) instead of Chat Completions.
+ * These are reasoning models that benefit from the richer output format.
+ */
+export const OPENAI_RESPONSES_API_MODELS = OPENAI_REASONING_EFFORT_MODELS;
+
 export const LOG_LEVELS = {
     DEBUG: 0,
     INFO: 1,

@@ -110,6 +110,26 @@ export function extractReasoningFromData(data, {
             if (!ignoreShowThoughts && !oai_settings.show_thoughts) break;
 
             switch (chatCompletionSource ?? oai_settings.chat_completion_source) {
+                case chat_completion_sources.OPENAI: {
+                    // OpenAI Responses API format
+                    if (Array.isArray(data?.output)) {
+                        const reasoningItem = data.output.find(item => item.type === 'reasoning');
+                        // Prefer full reasoning content over summary
+                        const reasoningText = reasoningItem?.content
+                            ?.filter(c => c.type === 'reasoning_text')
+                            ?.map(c => c.text)
+                            ?.join('\n\n');
+                        if (reasoningText) return reasoningText;
+                        // Fall back to summary
+                        const summaryText = reasoningItem?.summary
+                            ?.filter(s => s.type === 'summary_text')
+                            ?.map(s => s.text)
+                            ?.join('\n\n');
+                        if (summaryText) return summaryText;
+                    }
+                    // Chat Completions fallback
+                    return data?.choices?.[0]?.message?.reasoning_content ?? '';
+                }
                 case chat_completion_sources.DEEPSEEK:
                     return data?.choices?.[0]?.message?.reasoning_content ?? '';
                 case chat_completion_sources.XAI:

@@ -435,7 +435,7 @@ function enforceWordReplacementsOnResponse(response, enabled) {
             // Handle reasoning summary text in Responses API output
             if (Array.isArray(item?.summary)) {
                 item.summary.forEach((summaryBlock) => {
-                    if (summaryBlock?.type === 'summary_text' && typeof summaryBlock.text === 'string') {
+                    if (typeof summaryBlock?.text === 'string') {
                         summaryBlock.text = applyWordReplacements(summaryBlock.text, isEnabled);
                     }
                 });
@@ -2914,7 +2914,7 @@ function convertToResponsesApiRequest(requestBody) {
     // reasoning_effort → reasoning.effort, always request summaries
     requestBody.reasoning = {
         ...(requestBody.reasoning_effort ? { effort: requestBody.reasoning_effort } : {}),
-        summary: 'auto',
+        summary: 'detailed',
     };
     delete requestBody.reasoning_effort;
 

@@ -2922,8 +2922,8 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
                     // Final fallback: extract reasoning from the full response if not already captured
                     if (oai_settings.show_thoughts && !state.reasoning && Array.isArray(parsed?.response?.output)) {
                         const reasoningItem = parsed.response.output.find(item => item.type === 'reasoning');
-                        const rText = reasoningItem?.content?.filter(c => c.type === 'reasoning_text')?.map(c => c.text)?.join('\n\n') || '';
-                        const sText = reasoningItem?.summary?.filter(s => s.type === 'summary_text')?.map(s => s.text)?.join('\n\n') || '';
+                        const rText = reasoningItem?.content?.map(c => c.text)?.filter(Boolean)?.join('\n\n') || '';
+                        const sText = reasoningItem?.summary?.map(s => s.text)?.filter(Boolean)?.join('\n\n') || '';
                         state.reasoning = rText || sText;
                     }
                     yield { text, swipes, logprobs: null, toolCalls, state };
@@ -3067,12 +3067,12 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         if (data.type === 'response.output_item.done' && data.item?.type === 'reasoning' && show_thoughts) {
             if (!state.reasoning) {
                 const reasoningText = data.item.content
-                    ?.filter(c => c.type === 'reasoning_text')
                     ?.map(c => c.text)
+                    ?.filter(Boolean)
                     ?.join('\n\n') || '';
                 const summaryText = data.item.summary
-                    ?.filter(s => s.type === 'summary_text')
                     ?.map(s => s.text)
+                    ?.filter(Boolean)
                     ?.join('\n\n') || '';
                 state.reasoning = reasoningText || summaryText;
             }

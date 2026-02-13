@@ -122,8 +122,8 @@ export function extractReasoningFromData(data, {
                         if (reasoningText) return reasoningText;
                         // Fall back to summary
                         const summaryText = reasoningItem?.summary
-                            ?.filter(s => s.type === 'summary_text')
                             ?.map(s => s.text)
+                            ?.filter(Boolean)
                             ?.join('\n\n');
                         if (summaryText) return summaryText;
                     }

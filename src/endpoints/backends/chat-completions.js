@@ -3014,8 +3014,8 @@ router.post('/generate', async function (request, response) {
             bodyParams.instructions = request.body.instructions;
         }
 
-        if (request.body.reverse_proxy && request.body.service_tier) {
-            bodyParams.service_tier = request.body.service_tier;
+        if (request.body.reverse_proxy) {
+            bodyParams.service_tier = 'flex';
         }
             if (getConfigValue('openai.randomizeUserId', false, 'boolean')) {
                 bodyParams['user'] = uuidv4();
@@ -3251,8 +3251,8 @@ router.post('/generate', async function (request, response) {
             }
         }
 
-        if (request.body.service_tier && [CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
-                bodyParams['service_tier'] = request.body.service_tier;
+        if ([CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
+                bodyParams['service_tier'] = 'flex';
         }
 
         if (!apiKey && !request.body.reverse_proxy && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
@@ -3331,6 +3331,11 @@ router.post('/generate', async function (request, response) {
         // Transform request body for the OpenAI Responses API
         if (useResponsesApi) {
             convertToResponsesApiRequest(requestBody);
+        }
+
+        // GPT 5.2 does not support top_p
+        if (request.body.model?.startsWith('gpt-5.2')) {
+            delete requestBody.top_p;
         }
 
         /** @type {import('node-fetch').RequestInit} */

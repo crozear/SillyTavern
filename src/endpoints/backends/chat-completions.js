@@ -891,6 +891,11 @@ function createWordReplacementStream(enabled) {
             }
         }
 
+        // Handle Claude native streaming events
+        if (typeof data?.type === 'string') {
+            processClaudeNativeEvent.call(this, data);
+        }
+
         lines[dataLineIndex] = `data: ${JSON.stringify(data)}`;
         this.push(`${lines.join('\n')}\n\n`);
     }
@@ -915,6 +920,47 @@ function createWordReplacementStream(enabled) {
                 data.delta = emitted;
             } else {
                 data.delta = '';
+            }
+        }
+    }
+
+    /**
+     * Apply word replacements to Claude native streaming events.
+     * Handles content_block_delta (text_delta, thinking_delta) and flushes on message_stop.
+     * @param {object} data The parsed SSE event data
+     */
+    function processClaudeNativeEvent(data) {
+        if (data.type === 'content_block_delta' && data.delta) {
+            if (data.delta.type === 'text_delta' && typeof data.delta.text === 'string') {
+                const emitted = appendAndExtract(0, 'content', data.delta.text, false);
+                if (emitted) {
+                    data.delta.text = emitted;
+                } else {
+                    data.delta.text = '';
+                }
+            } else if (data.delta.type === 'thinking_delta' && typeof data.delta.thinking === 'string') {
+                const emitted = appendAndExtract(0, 'reasoning_content', data.delta.thinking, false);
+                if (emitted) {
+                    data.delta.thinking = emitted;
+                } else {
+                    data.delta.thinking = '';
+                }
+            }
+        } else if (data.type === 'message_stop' || data.type === 'message_delta') {
+            const extras = flushChoice(0);
+            if (extras.reasoning_content) {
+                this.push(`data: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    index: 0,
+                    delta: { type: 'thinking_delta', thinking: extras.reasoning_content },
+                })}\n\n`);
+            }
+            if (extras.content) {
+                this.push(`data: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    index: 0,
+                    delta: { type: 'text_delta', text: extras.content },
+                })}\n\n`);
             }
         }
     }

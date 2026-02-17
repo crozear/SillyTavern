@@ -1117,6 +1117,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream) 
 
     switch (reasoningEffort) {
         case REASONING_EFFORT.auto:
+        case 'none':
             return null;
         case REASONING_EFFORT.min:
             budgetTokens = 1024;
@@ -1142,6 +1143,33 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream) 
     }
 
     return budgetTokens;
+}
+
+/**
+ * Get the output_config.effort value for Claude adaptive thinking models.
+ * @param {string} reasoningEffort Reasoning effort setting
+ * @param {string} model Model name
+ * @returns {string|null} Effort level for the API, or null to use API default
+ */
+export function getClaudeAdaptiveEffort(reasoningEffort, model) {
+    const isOpus46 = /^claude-opus-4-6/.test(model);
+
+    switch (reasoningEffort) {
+        case 'none':
+        case REASONING_EFFORT.auto:
+            return null;
+        case REASONING_EFFORT.min:
+        case REASONING_EFFORT.low:
+            return 'low';
+        case REASONING_EFFORT.medium:
+            return 'medium';
+        case REASONING_EFFORT.high:
+            return 'high';
+        case REASONING_EFFORT.max:
+            return isOpus46 ? 'max' : 'high';
+        default:
+            return null;
+    }
 }
 
 /**

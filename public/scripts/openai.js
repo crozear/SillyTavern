@@ -235,6 +235,7 @@ const openrouter_middleout_types = {
 };
 
 export const reasoning_effort_types = {
+    none: 'none',
     auto: 'auto',
     low: 'low',
     medium: 'medium',

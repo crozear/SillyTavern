@@ -2117,8 +2117,8 @@
                                             <div class="toggle-description justifyLeft marginBot5" data-source="openai,custom,xai,aimlapi,openrouter,pollinations,perplexity,cometapi,electronhub,azure_openai,chutes" data-i18n="OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.">
                                                 OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.
                                             </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Allocates a portion of the response length for thinking (min: 1024 tokens, low: 10%, medium: 25%, high: 50%, max: 95%), but minimum 1024 tokens. Auto does not request thinking.">
-                                                Allocates a portion of the response length for thinking (min: 1024 tokens, low: 10%, medium: 25%, high: 50%, max: 95%), but minimum 1024 tokens. Auto does not request thinking.
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 95%). Auto does not request thinking.">
+                                                Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 95%). Auto does not request thinking.
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai">
                                                 <span data-i18n="Sets a dynamic reasoning depth level for thinking (Flash 3/Pro 3). High and low are supported by both, minimal and medium are Flash 3 only. Auto lets the model decide.">
@@ -3091,6 +3091,7 @@
                                 <select id="model_claude_select">
                                     <optgroup label="Versions">
                                         <option value="claude-opus-4-6">claude-opus-4-6</option>
+                                        <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                                         <option value="claude-opus-4-5">claude-opus-4-5</option>
                                         <option value="claude-opus-4-5-20251101">claude-opus-4-5-20251101</option>
                                         <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>

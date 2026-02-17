@@ -40,6 +40,7 @@ import {
     cachingAtDepthForClaude,
     getPromptNames,
     calculateClaudeBudgetTokens,
+    getClaudeAdaptiveEffort,
     calculateGoogleBudgetTokens,
     postProcessPrompt,
     PROMPT_PROCESSING_TYPE,
@@ -1082,9 +1083,10 @@ async function sendClaudeRequest(request, response) {
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model);
-        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model);
+        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model);
+        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model) && Boolean(request.body.enable_web_search);
+        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
         const useVerbosity = /^claude-(opus-4-5|opus-4-6)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
@@ -1163,9 +1165,9 @@ async function sendClaudeRequest(request, response) {
         }
 
         const reasoningEffort = request.body.reasoning_effort;
-        const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
+        const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
 
-        if (useThinking && Number.isInteger(budgetTokens)) {
+        if (useThinking && !isThinkingDisabled) {
             // No prefill when thinking
             fixThinkingPrefill = true;
             const minThinkTokens = 1024;
@@ -1175,10 +1177,26 @@ async function sendClaudeRequest(request, response) {
                 console.info(color.blue(`Increasing response length to ${newValue}.`));
                 requestBody.max_tokens = newValue;
             }
-            requestBody.thinking = {
-                type: 'enabled',
-                budget_tokens: budgetTokens,
-            };
+
+            if (isAdaptiveThinking) {
+                // Opus 4.6 / Sonnet 4.6: use adaptive thinking
+                requestBody.thinking = { type: 'adaptive' };
+
+                const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);
+                if (effort) {
+                    requestBody.output_config ??= {};
+                    requestBody.output_config.effort = effort;
+                }
+            } else {
+                // Older models: use enabled thinking with budget_tokens
+                const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
+                if (Number.isInteger(budgetTokens)) {
+                    requestBody.thinking = {
+                        type: 'enabled',
+                        budget_tokens: budgetTokens,
+                    };
+                }
+            }
 
             // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
             delete requestBody.temperature;
@@ -1190,8 +1208,8 @@ async function sendClaudeRequest(request, response) {
             convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
         }
 
-        // Verbosity = 'effort' (same values as OpenAI)
-        if (useVerbosity && request.body.verbosity) {
+        // Verbosity = 'effort' (same values as OpenAI) - skip for adaptive models (effort set via reasoning_effort above)
+        if (useVerbosity && !isAdaptiveThinking && request.body.verbosity) {
             betaHeaders.push('effort-2025-11-24');
             requestBody.output_config ??= {};
             requestBody.output_config.effort = request.body.verbosity;

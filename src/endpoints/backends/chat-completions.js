@@ -1200,8 +1200,11 @@ async function sendClaudeRequest(request, response) {
 
             // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
             delete requestBody.temperature;
-            delete requestBody.top_p;
             delete requestBody.top_k;
+
+            if (requestBody.top_p < 0.95) {
+                delete requestBody.top_p;
+            }
         }
 
         if (fixThinkingPrefill && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {

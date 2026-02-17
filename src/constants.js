@@ -488,6 +488,14 @@ export const OPENAI_REASONING_EFFORT_MAP = {
  */
 export const OPENAI_RESPONSES_API_MODELS = OPENAI_REASONING_EFFORT_MODELS;
 
+export const NANOGPT_REASONING_EFFORT_MAP = {
+    min: 'none',
+    low: 'minimal',
+    medium: 'low',
+    high: 'medium',
+    max: 'high',
+};
+
 export const LOG_LEVELS = {
     DEBUG: 0,
     INFO: 1,

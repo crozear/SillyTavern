@@ -251,6 +251,9 @@ const WORD_REPLACEMENT_CONFIG = {
         myMember: ['my member', 'my manhood', 'my hardness', 'my length'],
         yourMemberMore: ['your member', 'your manhood'],
         theirMember: ['their member', 'their manhood', 'their length', 'their hardness'],
+        herBreasts: ['her breasts', 'her breast', 'her bosom', 'her bust'],
+        yourBreasts: ['your breasts', 'your breast', 'your bosom', 'your bust'],
+        myBreasts: ['my breasts', 'my breast', 'my bosom', 'my bust'],
 
         yourLength: ["your length"],
         sensations: ["ache"],
@@ -313,6 +316,9 @@ const WORD_REPLACEMENT_CONFIG = {
         myMember: ['my cock', 'my dick'],
         yourMemberMore: ['your cock', 'your dick'],
         theirMember: ['their cock', 'their dick'],
+        herBreasts: ['her tits', 'her titties', 'her boobs'],
+        yourBreasts: ['your tits', 'your titties', 'your boobs'],
+        myBreasts: ['my tits', 'my titties', 'my boobs'],
 
         yourLength: ["your cock", "your dick"],
         sensations: ["throb", "quiver", "swell", "clench", "tighten", "pulse", "sting"],

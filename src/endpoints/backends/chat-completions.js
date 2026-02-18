@@ -256,7 +256,7 @@ const WORD_REPLACEMENT_CONFIG = {
         myBreasts: ['my breasts', 'my breast', 'my bosom', 'my bust'],
 
         yourLength: ["your length"],
-        sensations: ["ache"],
+        sensations: ['ache', 'tingle', 'flutter'],
         actionsPenetration: ["insert", "penetrate"],
         actionsStimulation: ["stimulate", "arouse"],
         becameAroused: ['became aroused', 'grew aroused', 'felt aroused'],

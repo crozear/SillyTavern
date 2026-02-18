@@ -259,6 +259,9 @@ const WORD_REPLACEMENT_CONFIG = {
         sensations: ["ache"],
         actionsPenetration: ["insert", "penetrate"],
         actionsStimulation: ["stimulate", "arouse"],
+        becameAroused: ['became aroused', 'grew aroused', 'felt aroused'],
+        gettingAroused: ['becoming aroused', 'growing aroused', 'getting aroused', 'feeling aroused'],
+        actionsForeplay: ['fondle', 'caress'],
     },
     replacementGroups: {
         phallus: ["cock", "dick", "shaft"],
@@ -324,6 +327,9 @@ const WORD_REPLACEMENT_CONFIG = {
         sensations: ["throb", "quiver", "swell", "clench", "tighten", "pulse", "sting"],
         actionsPenetration: ["fuck", "hammer", "pound", "pump", "thrust", "slam", "ram", "drive", "bury", "hilt", "bottom out"],
         actionsStimulation: ["grind", "suck", "ravage", "rub", "stroke", "tug", "squeeze", "lap", "lick", "swirl", "milk"],
+        becameAroused: ['got horny', 'got turned on', 'got hot'],
+        gettingAroused: ['getting horny', 'getting turned on', 'getting hot'],
+        actionsForeplay: ['grope', 'knead', 'manhandle', 'paw at'],
     },
 };
 

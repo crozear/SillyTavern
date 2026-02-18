@@ -243,6 +243,10 @@ const WORD_REPLACEMENT_CONFIG = {
         // “chest (if female)” – only in clearly gendered phrasing so you don’t
         // turn “knife in his chest” into “knife in his tits”
         chestFemale: ["her chest", "her bare chest"],
+        herSexNoun: ['her sex', 'her core', 'her center', 'her flower', 'her folds', 'her depths', 'her womanhood', 'her entrance'],
+        yourSexNoun: ['your sex', 'your core', 'your center', 'your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
+        mySexNoun: ['my sex', 'my core', 'my center', 'my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
+        theirSexNoun: ['their sex', 'their core', 'their center', 'their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
 
         yourLength: ["your length"],
         sensations: ["ache"],
@@ -297,6 +301,10 @@ const WORD_REPLACEMENT_CONFIG = {
 
         // female chest → tits/breasts/nipples, keeping the pronoun
         chestFemale: ["her tits", "her breasts", "her nipples"],
+        herSexNoun: ['her pussy', 'her cunt', 'her slit'],
+        yourSexNoun: ['your pussy', 'your cunt', 'your slit'],
+        mySexNoun: ['my pussy', 'my cunt', 'my slit'],
+        theirSexNoun: ['their pussy', 'their cunt', 'their slit'],
 
         yourLength: ["your cock", "your dick"],
         sensations: ["throb", "quiver", "swell", "clench", "tighten", "pulse", "sting"],

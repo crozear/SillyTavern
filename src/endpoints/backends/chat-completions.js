@@ -183,71 +183,54 @@ const WORD_REPLACEMENT_CONFIG = {
         slick: ['slick'],
         femCum: ['vaginal lubrication'],
         cum: ['semen', 'seed'],
-        fluidVague: ['release', 'discharge', 'secretions'],
+        fluidVague: ['discharge', 'secretions'],
         iOrgasm: ['I orgasm', 'I climax', 'I ejaculate'],
         orgasmIng: ['ejaculating', 'climaxing', 'orgasming'],
         orgasmEd: ['orgasmed', 'climaxed', 'ejaculated'],
         // now also catch “orgasm” as a noun directly
         orgasm: ['climax', 'ejaculate', 'orgasm', 'orgasms'],
 
-        // state-of-arousal words bound to pronouns to avoid generic “heat” matches
+        // state-of-arousal words bound to pronouns — only clearly emotional/abstract terms
+        // (heat/warmth/arousal removed: too physical, "her warmth give way" ≠ "her neediness give way")
         yourSens: [
-            'your heat',
-            'your warmth',
             'your desire',
             'your need',
             'your want',
             'your excitement',
         ],
         mySens: [
-            'my heat',
-            'my warmth',
             'my desire',
             'my need',
             'my want',
             'my excitement',
         ],
         herSens: [
-            'her heat',
-            'her warmth',
             'her desire',
             'her need',
             'her want',
             'her excitement',
         ],
         hisSens: [
-            'his heat',
-            'his warmth',
             'his desire',
             'his need',
             'his want',
             'his excitement',
         ],
         theirSens: [
-            'their heat',
-            'their warmth',
             'their desire',
             'their need',
             'their want',
             'their excitement',
         ],
 
-        // 'arousal' with pronouns — gendered routes to body parts,
-        // ambiguous pronouns route to terms that work both physically and emotionally
-        yourArousal: ['your arousal'],
-        myArousal: ['my arousal'],
-        theirArousal: ['their arousal'],
-
-        // bare “arousal” used as a noun (e.g. “his arousal spiked”)
-        arousalNoun: ['arousal'],
-
         // “chest (if female)” – only in clearly gendered phrasing so you don’t
         // turn “knife in his chest” into “knife in his tits”
         chestFemale: ['her chest', 'her bare chest'],
         herSexNoun: ['her sex', 'her core', 'her center', 'her flower', 'her folds', 'her depths', 'her womanhood', 'her entrance', 'her arousal'],
-        yourSexNoun: ['your sex', 'your core', 'your center', 'your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
-        mySexNoun: ['my sex', 'my core', 'my center', 'my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
-        theirSexNoun: ['their sex', 'their core', 'their center', 'their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
+        // your/my/their: only unambiguously female terms (sex/core/center removed — gender-ambiguous false positives)
+        yourSexNoun: ['your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
+        mySexNoun: ['my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
+        theirSexNoun: ['their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
         hisMember: ['his member', 'his manhood', 'his hardness', 'his length', 'his arousal'],
         myMember: ['my member', 'my manhood', 'my hardness', 'my length'],
         yourMemberMore: ['your member', 'your manhood'],
@@ -306,14 +289,6 @@ const WORD_REPLACEMENT_CONFIG = {
         herSens: ['her horniness', 'her neediness'],
         hisSens: ['his horniness', 'his neediness'],
         theirSens: ['their horniness', 'their neediness'],
-
-        // generic 'arousal' → horniness/need
-        arousalNoun: ['horniness', 'need', 'neediness', 'lust'],
-
-        // pronoun+arousal for ambiguous gender — terms that work both physically and emotionally
-        yourArousal: ['your lust', 'your hunger', 'your need'],
-        myArousal: ['my lust', 'my hunger', 'my need'],
-        theirArousal: ['their lust', 'their hunger', 'their need'],
 
         // female chest → tits/breasts/nipples, keeping the pronoun
         chestFemale: ['her tits', 'her breasts', 'her nipples'],

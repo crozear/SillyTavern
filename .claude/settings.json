@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(cygpath:*)",
+      "Read(//c//**)",
+      "Bash(node -e:*)"
     ]
   }
 }

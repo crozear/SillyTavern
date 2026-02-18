@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # SillyTavern - Custom Fork
 
 This is a customized fork of [SillyTavern](https://github.com/SillyTavern/SillyTavern), a frontend for LLM APIs.
@@ -80,12 +84,36 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Group chats: modified `isValidImageUrl` null guard
 - Various `// @ts-ignore` additions for toastr calls
 
-## Running
+## Commands
 
 ```bash
+# Run the server
 npm install
-npm start        # or use Start.bat
+npm start              # or Start.bat on Windows
+npm run debug          # with Node.js inspector
+
+# Lint (from repo root)
+npm run lint           # check src/**/*.js, public/**/*.js
+npm run lint:fix       # auto-fix
+
+# Tests (separate package in tests/ subdirectory)
+cd tests && npm install
+npm test               # unit (Jest) + e2e (Playwright)
+npm run test:unit      # Jest only
+npm run test:e2e       # Playwright only
+
+# Run a single Jest test file
+node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.json util.test.js
 ```
+
+## Code Style
+
+Enforced by ESLint (`.eslintrc.cjs`). Key rules:
+- Single quotes, semicolons required, 4-space indentation
+- Trailing commas on multiline (`comma-dangle: always-multiline`)
+- `no-unused-vars` is an error (args exempted)
+- Browser globals: `toastr`, `SillyTavern`, `ePub`, `pdfjsLib` — don't import these
+- `// @ts-ignore` is acceptable for external library calls (toastr pattern used throughout)
 
 ## Common Tasks
 
@@ -106,6 +134,50 @@ When modifying **frontend settings**:
 - UI controls go in `public/index.html` with `data-source` attributes controlling which providers show them
 - Setting binding is in `public/scripts/openai.js` in the `settingsToUpdate` object
 - Default values go in `default_settings` in the same file
+
+## Skills (Slash Commands)
+
+These skills are available via the `Skill` tool. Check before any response — if there's even a 1% chance a skill applies, invoke it first.
+
+### Workflow / Process Skills (invoke these first — they determine HOW to work)
+
+| Trigger | Skill |
+|---------|-------|
+| Starting any conversation | `superpowers:using-superpowers` |
+| Any bug, test failure, or unexpected behavior | `superpowers:systematic-debugging` |
+| Before implementing any feature or fix | `superpowers:test-driven-development` |
+| Building something new or adding functionality | `superpowers:brainstorming` (before any code) |
+| Have a spec/requirements for a multi-step task | `superpowers:writing-plans` |
+| Executing a written plan in the current session | `superpowers:subagent-driven-development` |
+| Executing a written plan in a new/separate session | `superpowers:executing-plans` |
+| 2+ independent tasks that can run in parallel | `superpowers:dispatching-parallel-agents` |
+| About to claim work is complete/fixed/passing | `superpowers:verification-before-completion` |
+| Implementation complete, deciding how to integrate | `superpowers:finishing-a-development-branch` |
+| Starting feature work needing workspace isolation | `superpowers:using-git-worktrees` |
+
+### Code Review Skills
+
+| Trigger | Skill |
+|---------|-------|
+| Completed a task or feature, before merging | `superpowers:requesting-code-review` |
+| Received code review feedback to implement | `superpowers:receiving-code-review` |
+| Reviewing a pull request | `code-review:code-review` |
+
+### Implementation Skills (invoke after brainstorming/planning)
+
+| Trigger | Skill |
+|---------|-------|
+| Building UI components, pages, or web interfaces | `frontend-design:frontend-design` |
+| Guided feature development with codebase analysis | `feature-dev:feature-dev` |
+| Customizing keyboard shortcuts or keybindings | `keybindings-help` |
+| Creating or editing skills themselves | `superpowers:writing-skills` |
+
+### Skill Priority
+
+1. **Process skills first** — `systematic-debugging`, `brainstorming`, `writing-plans`
+2. **Implementation skills second** — `frontend-design`, `feature-dev`
+
+`brainstorming` always leads to `writing-plans`, which leads to `subagent-driven-development` or `executing-plans`.
 
 ## Merging Upstream
 

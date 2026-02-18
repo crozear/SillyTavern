@@ -247,6 +247,10 @@ const WORD_REPLACEMENT_CONFIG = {
         yourSexNoun: ['your sex', 'your core', 'your center', 'your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
         mySexNoun: ['my sex', 'my core', 'my center', 'my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
         theirSexNoun: ['their sex', 'their core', 'their center', 'their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
+        hisMember: ['his member', 'his manhood', 'his hardness', 'his length'],
+        myMember: ['my member', 'my manhood', 'my hardness', 'my length'],
+        yourMemberMore: ['your member', 'your manhood'],
+        theirMember: ['their member', 'their manhood', 'their length', 'their hardness'],
 
         yourLength: ["your length"],
         sensations: ["ache"],
@@ -305,6 +309,10 @@ const WORD_REPLACEMENT_CONFIG = {
         yourSexNoun: ['your pussy', 'your cunt', 'your slit'],
         mySexNoun: ['my pussy', 'my cunt', 'my slit'],
         theirSexNoun: ['their pussy', 'their cunt', 'their slit'],
+        hisMember: ['his cock', 'his dick'],
+        myMember: ['my cock', 'my dick'],
+        yourMemberMore: ['your cock', 'your dick'],
+        theirMember: ['their cock', 'their dick'],
 
         yourLength: ["your cock", "your dick"],
         sensations: ["throb", "quiver", "swell", "clench", "tighten", "pulse", "sting"],

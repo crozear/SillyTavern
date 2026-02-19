@@ -362,6 +362,7 @@ export const settingsToUpdate = {
     continue_postfix: ['#continue_postfix', 'continue_postfix', false, false],
     function_calling: ['#openai_function_calling', 'function_calling', true, false],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
+    claude_use_adaptive_thinking: ['#claude_use_adaptive_thinking', 'claude_use_adaptive_thinking', true, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
@@ -470,6 +471,7 @@ const default_settings = {
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
+    claude_use_adaptive_thinking: true,
     word_replacement_enabled: true,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
@@ -2629,6 +2631,7 @@ export async function createGenerationParameters(settings, model, type, messages
         'char_name': name2,
         'group_names': getGroupNames(),
         'include_reasoning': Boolean(settings.show_thoughts),
+        'claude_use_adaptive_thinking': Boolean(settings.claude_use_adaptive_thinking),
         'word_replacement_enabled': Boolean(oai_settings.word_replacement_enabled),
         'reasoning_effort': getReasoningEffort(settings, model),
         'enable_web_search': Boolean(settings.enable_web_search),
@@ -6949,6 +6952,11 @@ export function initOpenAI() {
 
     $('#openai_show_thoughts').on('input', function () {
         oai_settings.show_thoughts = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#claude_use_adaptive_thinking').on('input', function () {
+        oai_settings.claude_use_adaptive_thinking = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

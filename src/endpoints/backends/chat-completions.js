@@ -157,12 +157,11 @@ const WORD_REPLACEMENT_CONFIG = {
         phallus: ['shaft', 'penis', 'hardness'],
         phallusTip: ['glans'],
         urethra: ['urethra'],
-        clitoris: ['clitoris', 'nub'],
+        clitoris: ['clitoris', 'nub', 'bundle of nerves'],
         inner: ['labia minora'],
         outer: ['labia majora', 'labia'],
         innerEntrance: ['vaginal walls', 'vaginal canal'],
         entrance: ['entrance'],
-        mound: ['mons pubis', 'mound'],
         pubicHair: ['pubic hair'],
         pubicArea: ['pubic', 'crotch', 'pelvis', 'perineum'],
         butt: ['buttocks', 'butt', 'hindquarters', 'rear'],
@@ -226,18 +225,32 @@ const WORD_REPLACEMENT_CONFIG = {
         // “chest (if female)” – only in clearly gendered phrasing so you don’t
         // turn “knife in his chest” into “knife in his tits”
         chestFemale: ['her chest', 'her bare chest'],
-        herSexNoun: ['her sex', 'her core', 'her center', 'her flower', 'her folds', 'her depths', 'her womanhood', 'her entrance', 'her arousal'],
+        herSexNoun: ['her sex', 'her core', 'her center', 'her flower', 'her petals', 'her folds', 'her depths', 'her womanhood', 'her entrance', 'her arousal'],
         // your/my/their: only unambiguously female terms (sex/core/center removed — gender-ambiguous false positives)
-        yourSexNoun: ['your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
-        mySexNoun: ['my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
-        theirSexNoun: ['their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
+        yourSexNoun: ['your flower', 'your petals', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
+        mySexNoun: ['my flower', 'my petals', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
+        theirSexNoun: ['their flower', 'their petals', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
+
         hisMember: ['his member', 'his manhood', 'his hardness', 'his length', 'his arousal'],
         myMember: ['my member', 'my manhood', 'my hardness', 'my length'],
         yourMemberMore: ['your member', 'your manhood'],
         theirMember: ['their member', 'their manhood', 'their length', 'their hardness'],
+
         herBreasts: ['her breasts', 'her breast', 'her bosom', 'her bust'],
         yourBreasts: ['your breasts', 'your breast', 'your bosom', 'your bust'],
         myBreasts: ['my breasts', 'my breast', 'my bosom', 'my bust'],
+
+        hisPeaks: ['his peaks'],
+        herPeaks: ['her peaks'],
+        myPeaks: ['my peaks'],
+        theirPeaks: ['their peaks'],
+        yourPeaks: ['your peaks'],
+
+        hisMound: ['his mound'],
+        herMound: ['her mound'],
+        myMound: ['my mound'],
+        theirMound: ['their mound'],
+        yourMound: ['your mound'],
 
         yourLength: ['your length'],
         sensations:    ['tingle', 'flutter'],
@@ -269,7 +282,6 @@ const WORD_REPLACEMENT_CONFIG = {
         outer: ['outer pussy lips', 'pussy lips', 'cunt lips', 'pussy', 'cunt'],
         innerEntrance: ['pussy walls', 'pussy tunnel', 'cunt walls', 'cunt tunnels', 'inner pussy'],
         entrance: ['hole', 'slit', 'opening'],
-        mound: ['around my pussy', 'around my cunt'],
         pubicHair: ['pubes'],
         pubicArea: ['sexy goods'],
         butt: ['ass', 'cheeks', 'ass cheeks'],
@@ -305,17 +317,32 @@ const WORD_REPLACEMENT_CONFIG = {
 
         // female chest → tits/breasts/nipples, keeping the pronoun
         chestFemale: ['her tits', 'her breasts', 'her nipples'],
+
         herSexNoun: ['her pussy', 'her cunt', 'her slit'],
         yourSexNoun: ['your pussy', 'your cunt', 'your slit'],
         mySexNoun: ['my pussy', 'my cunt', 'my slit'],
         theirSexNoun: ['their pussy', 'their cunt', 'their slit'],
+
         hisMember: ['his cock', 'his dick'],
         myMember: ['my cock', 'my dick'],
         yourMemberMore: ['your cock', 'your dick'],
         theirMember: ['their cock', 'their dick'],
+
         herBreasts: ['her tits', 'her titties', 'her boobs'],
         yourBreasts: ['your tits', 'your titties', 'your boobs'],
         myBreasts: ['my tits', 'my titties', 'my boobs'],
+
+        hisMound: ['around his cock', 'around his dick'],
+        herMound: ['around her pussy', 'around her cunt'],
+        myMound: ['around my pussy', 'around my cunt'],
+        theirMound: ['around their pussy', 'around their cunt'],
+        yourMound: ['around your pussy', 'around your cunt'],
+
+        hisPeaks: ['his nipples'],
+        herPeaks: ['her nipples'],
+        myPeaks: ['my nipples'],
+        theirPeaks: ['their nipples'],
+        yourPeaks: ['your nipples'],
 
         yourLength: ['your cock', 'your dick'],
         sensations:    ['throb', 'quiver', 'swell', 'clench', 'burn', 'sting'],

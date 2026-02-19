@@ -4,7 +4,12 @@
       "Bash(npm install:*)",
       "Bash(cygpath:*)",
       "Read(//c//**)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(npm run lint:*)",
+      "Bash(npx eslint:*)",
+      "Bash(./node_modules/.bin/eslint:*)",
+      "Bash(ls:*)",
+      "Bash(node -c:*)"
     ]
   }
 }

@@ -191,16 +191,17 @@ const WORD_REPLACEMENT_CONFIG = {
         // “chest (if female)” – only in clearly gendered phrasing so you don’t
         // turn “knife in his chest” into “knife in his tits”
         chestFemale: ['her chest', 'her bare chest'],
-        herSexNoun: ['her sex', 'her opening', 'her core', 'her center', 'her flower', 'her folds', 'her passage', 'her depths', 'her womanhood', 'her entrance', 'her arousal'],
+        herSexNoun: ['her sex', 'her opening', 'her core', 'her center', 'her flower', 'her folds', 'her passage', 'her depths', 'her womanhood', 'her entrance', 'her arousal', 'her femininity'],
         // your/my/their: only unambiguously female terms (sex/core/center removed — gender-ambiguous false positives)
-        yourSexNoun: ['your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance'],
-        mySexNoun: ['my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance'],
-        theirSexNoun: ['their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance'],
+        yourSexNoun: ['your flower', 'your folds', 'your depths', 'your womanhood', 'your entrance', 'your femininity'],
+        mySexNoun: ['my flower', 'my folds', 'my depths', 'my womanhood', 'my entrance', 'my femininity'],
+        theirSexNoun: ['their flower', 'their folds', 'their depths', 'their womanhood', 'their entrance', 'their femininity'],
 
         hisMember: ['his member', 'his manhood', 'his hardness', 'his length', 'his arousal', 'his girth'],
         myMember: ['my member', 'my manhood', 'my hardness', 'my length', 'my girth'],
         yourMember: ['your member', 'your manhood', 'your hardness', 'your length', 'your girth'],
         theirMember: ['their member', 'their manhood', 'their length', 'their hardness', 'their girth'],
+        loveMuscle: ['love muscle', 'tumescence'],
 
         herBreasts: ['her breasts', 'her breast', 'her bosom', 'her bust'],
         yourBreasts: ['your breasts', 'your breast', 'your bosom', 'your bust'],
@@ -251,7 +252,7 @@ const WORD_REPLACEMENT_CONFIG = {
         clitoris: ['clitoris', 'nub', 'bundle of nerves'],
         inner: ['labia minora'],
         outer: ['labia majora', 'labia', 'petals'],
-        innerEntrance: ['vaginal walls', 'vaginal canal'],
+        innerEntrance: ['vaginal walls', 'vaginal canal', 'inner walls'],
         entrance: ['entrance'],
         pubicHair: ['pubic hair'],
         pubicArea: ['pubic', 'crotch', 'pelvis', 'perineum'],
@@ -302,6 +303,7 @@ const WORD_REPLACEMENT_CONFIG = {
         myMember: ['my cock', 'my dick'],
         yourMember: ['your cock', 'your dick'],
         theirMember: ['their cock', 'their dick'],
+        loveMuscle: ['cock', 'dick'],
 
         herBreasts: ['her tits', 'her titties', 'her boobs'],
         yourBreasts: ['your tits', 'your titties', 'your boobs'],
@@ -336,7 +338,7 @@ const WORD_REPLACEMENT_CONFIG = {
         achingFor:  ['throbbing for', 'burning for', 'clenching for'],
         actionsPenetration:    ['fuck', 'hammer', 'pound', 'pump', 'thrust', 'slam', 'ram', 'drive', 'bury', 'hilt'],
         actionsPenetrationS:   ['fucks', 'hammers', 'pounds', 'pumps', 'thrusts', 'slams', 'rams', 'drives', 'buries', 'hilts'],
-        actionsPenetrationEd:  ['fucked', 'hammered', 'pounded', 'pumped', 'thrusted', 'slammed', 'rammed', 'drove', 'buried', 'hilted'],
+        actionsPenetrationEd:  ['fucked', 'hammered', 'pounded', 'pumped', 'thrust', 'slammed', 'rammed', 'drove', 'buried', 'hilted'],
         actionsPenetrationIng: ['fucking', 'hammering', 'pounding', 'pumping', 'thrusting', 'slamming', 'ramming', 'driving', 'burying', 'hilting'],
         actionsStimulation:    ['grind', 'suck', 'ravage', 'rub', 'stroke', 'tug', 'squeeze', 'lap', 'lick', 'swirl', 'milk'],
         actionsStimulationS:   ['grinds', 'sucks', 'ravages', 'rubs', 'strokes', 'tugs', 'squeezes', 'laps', 'licks', 'swirls', 'milks'],
@@ -703,7 +705,7 @@ function createWordReplacementStream(enabled) {
         const region = str.slice(start, end);
 
         for (const phrase of multiWordPhrases) {
-            const rel = region.indexOf(phrase);
+            const rel = region.toLowerCase().indexOf(phrase);
             if (rel === -1) continue;
 
             const phraseStart = start + rel;

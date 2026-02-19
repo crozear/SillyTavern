@@ -9,7 +9,9 @@
       "Bash(npx eslint:*)",
       "Bash(./node_modules/.bin/eslint:*)",
       "Bash(ls:*)",
-      "Bash(node -c:*)"
+      "Bash(node -c:*)",
+      "Bash(node --check:*)",
+      "Bash(echo:*)"
     ]
   }
 }

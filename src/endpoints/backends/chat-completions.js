@@ -188,6 +188,13 @@ const WORD_REPLACEMENT_CONFIG = {
             'their excitement',
         ],
 
+        withSens: [
+            'with desire',
+            'with need',
+            'with want',
+            'with excitement',
+        ],
+
         // “chest (if female)” – only in clearly gendered phrasing so you don’t
         // turn “knife in his chest” into “knife in his tits”
         chestFemale: ['her chest', 'her bare chest'],
@@ -226,10 +233,10 @@ const WORD_REPLACEMENT_CONFIG = {
         yourMound: ['your mound'],
 
         yourLength: ['your length'],
-        sensations:    ['tingle', 'flutter'],
-        sensationsS:   ['tingles', 'flutters'],
-        sensationsEd:  ['tingled', 'fluttered'],
-        sensationsIng: ['tingling', 'fluttering'],
+        sensations:    ['tingle', 'flutter', 'pulse'],
+        sensationsS:   ['tingles', 'flutters', 'pulses'],
+        sensationsEd:  ['tingled', 'fluttered', 'pulsed'],
+        sensationsIng: ['tingling', 'fluttering', 'pulsing'],
         // "ache" only in sexual-context phrases to avoid false positives ("my head aches")
         acheFor:    ['ache for'],
         achesFor:   ['aches for'],
@@ -250,7 +257,7 @@ const WORD_REPLACEMENT_CONFIG = {
         phallusTip: ['glans'],
         urethra: ['urethra'],
         clitoris: ['clitoris', 'nub', 'bundle of nerves'],
-        inner: ['labia minora'],
+        inner: ['labia minora','secret place', 'most intimate place'],
         outer: ['labia majora', 'labia', 'petals'],
         innerEntrance: ['vaginal walls', 'vaginal canal', 'inner walls'],
         entrance: ['entrance'],
@@ -290,6 +297,7 @@ const WORD_REPLACEMENT_CONFIG = {
         herSens: ['her horniness', 'her lewdness'],
         hisSens: ['his horniness', 'his lewdness'],
         theirSens: ['their horniness', 'their lewdness'],
+        withSens: ['with horniness', 'with lewdness', 'with lust'],
 
         // female chest → tits/breasts/nipples, keeping the pronoun
         chestFemale: ['her tits', 'her breasts', 'her nipples', 'her nips'],

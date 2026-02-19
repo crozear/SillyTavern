@@ -151,7 +151,6 @@ async function isOpenRouterModelCacheable(modelId) {
     }
 }
 
-// Simple word replacement config copied from the proxy implementation
 const WORD_REPLACEMENT_CONFIG = {
     sourceGroups: {
 
@@ -226,6 +225,12 @@ const WORD_REPLACEMENT_CONFIG = {
         theirPeak: ['their peak'],
         yourPeak: ['your peak'],
 
+        hisRelease: ['his release'],
+        herRelease: ['her release'],
+        myRelease: ['my release'],
+        theirRelease: ['their release'],
+        yourRelease: ['your release'],
+
         hisMound: ['his mound'],
         herMound: ['her mound'],
         myMound: ['my mound'],
@@ -256,7 +261,7 @@ const WORD_REPLACEMENT_CONFIG = {
         phallus: ['phallus', 'shaft', 'penis', 'hardness'],
         phallusTip: ['glans'],
         urethra: ['urethra'],
-        clitoris: ['clitoris', 'nub', 'bundle of nerves'],
+        clitoris: ['clitoris', 'nub', 'bundle of nerves', 'bud'],
         inner: ['labia minora','secret place', 'most intimate place'],
         outer: ['labia majora', 'labia', 'petals'],
         innerEntrance: ['vaginal walls', 'vaginal canal', 'inner walls'],
@@ -322,6 +327,12 @@ const WORD_REPLACEMENT_CONFIG = {
         myPeak: ['my limit and cum'],
         theirPeak: ['their limit and cum'],
         yourPeak: ['your limit and cum'],
+
+        hisRelease: ['him cumming'],
+        herRelease: ['her squirting'],
+        myRelease: ['me cumming'],
+        theirRelease: ['them cumming'],
+        yourRelease: ['you cumming'],
 
         hisMound: ['around his cock', 'around his dick'],
         herMound: ['around her pussy', 'around her cunt'],

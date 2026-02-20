@@ -409,7 +409,7 @@ const default_settings = {
     scenario_format: default_scenario_format,
     personality_format: default_personality_format,
     openai_model: 'gpt-5.1',
-    claude_model: 'claude-sonnet-4-5',
+    claude_model: 'claude-sonnet-4-6',
     google_model: 'gemini-2.5-pro',
     vertexai_model: 'gemini-2.5-pro',
     ai21_model: 'jamba-large',

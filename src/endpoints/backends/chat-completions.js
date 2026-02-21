@@ -1117,12 +1117,12 @@ function formatStreamingResponse(raw) {
     }
 
     const parts = [];
+    if (thinking) parts.push(`[Thinking]\n${thinking}`);
+    if (text) parts.push(`[Response]\n${text}`);
     if (metaBase) {
         const out = finalOutputTokens ?? '?';
         parts.push(`model: ${metaBase.model} | in: ${metaBase.inputTokens} | out: ${out} | cache_read: ${metaBase.cacheRead} | cache_created: ${metaBase.cacheCreated}`);
     }
-    if (thinking) parts.push(`[Thinking]\n${thinking}`);
-    if (text) parts.push(`[Response]\n${text}`);
     return parts.length ? parts.join('\n\n') : '(no text content)';
 }
 

@@ -1079,6 +1079,53 @@ function createWordReplacementStream(enabled) {
     return transformStream;
 }
 
+/**
+ * Parses a raw SSE response body and returns a human-readable summary.
+ * Extracts thinking deltas and text deltas, ignoring protocol noise.
+ * @param {string} raw - The full SSE response string
+ * @returns {string}
+ */
+function formatStreamingResponse(raw) {
+    let thinking = '';
+    let text = '';
+    let metaBase = null;
+    let finalOutputTokens = null;
+
+    for (const line of raw.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+        let parsed;
+        try { parsed = JSON.parse(jsonStr); } catch { continue; }
+
+        if (parsed?.type === 'message_start' && parsed.message) {
+            const msg = parsed.message;
+            const u = msg.usage ?? {};
+            metaBase = { model: msg.model, inputTokens: u.input_tokens ?? '?', cacheRead: u.cache_read_input_tokens ?? 0, cacheCreated: u.cache_creation_input_tokens ?? 0 };
+        }
+
+        if (parsed?.type === 'message_delta' && parsed.usage?.output_tokens != null) {
+            finalOutputTokens = parsed.usage.output_tokens;
+        }
+
+        const delta = parsed?.delta ?? parsed?.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if (delta.type === 'thinking_delta' && delta.thinking) thinking += delta.thinking;
+        else if (delta.type === 'text_delta' && delta.text) text += delta.text;
+        else if (typeof delta.content === 'string') text += delta.content;
+    }
+
+    const parts = [];
+    if (metaBase) {
+        const out = finalOutputTokens ?? '?';
+        parts.push(`model: ${metaBase.model} | in: ${metaBase.inputTokens} | out: ${out} | cache_read: ${metaBase.cacheRead} | cache_created: ${metaBase.cacheCreated}`);
+    }
+    if (thinking) parts.push(`[Thinking]\n${thinking}`);
+    if (text) parts.push(`[Response]\n${text}`);
+    return parts.length ? parts.join('\n\n') : '(no text content)';
+}
+
 function forwardFetchResponseWithWordReplacements(from, to, enabled) {
     const isEnabled = areWordReplacementsEnabled(enabled);
     let statusCode = from.status;
@@ -1109,6 +1156,8 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
         };
 
         if (!isEnabled) {
+            const chunks = [];
+            from.body.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
             from.body.pipe(to);
 
             to.socket.on('close', function () {
@@ -1117,7 +1166,7 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             });
 
             from.body.on('end', function () {
-                console.info('Streaming request finished');
+                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8')));
                 endResponse();
             });
 
@@ -1126,6 +1175,8 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
                 endResponse();
             });
         } else {
+            const chunks = [];
+            from.body.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
             const transformStream = createWordReplacementStream(isEnabled);
             from.body.pipe(transformStream).pipe(to);
 
@@ -1136,7 +1187,7 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             });
 
             transformStream.on('end', function () {
-                console.info('Streaming request finished');
+                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8')));
                 endResponse();
             });
 

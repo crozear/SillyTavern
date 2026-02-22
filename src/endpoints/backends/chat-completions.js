@@ -1274,6 +1274,12 @@ async function sendClaudeRequest(request, response) {
     if (!Number.isInteger(cachingAtDepth) || cachingAtDepth < 0) {
         cachingAtDepth = -1;
     }
+    // UI toggle: override cachingAtDepth from request body
+    if (request.body.claude_enable_caching_at_depth === false) {
+        cachingAtDepth = -1;
+    } else if (request.body.claude_enable_caching_at_depth === true && cachingAtDepth < 0) {
+        cachingAtDepth = 0;
+    }
 
     if (!apiKey) {
         console.warn(color.red(`Claude API key is missing.\n${divider}`));

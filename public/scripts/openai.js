@@ -352,6 +352,7 @@ export const settingsToUpdate = {
     assistant_prefill: ['#claude_assistant_prefill', 'assistant_prefill', false, false],
     assistant_impersonation: ['#claude_assistant_impersonation', 'assistant_impersonation', false, false],
     use_sysprompt: ['#use_sysprompt', 'use_sysprompt', true, false],
+    claude_enable_caching_at_depth: ['#claude_enable_caching_at_depth', 'claude_enable_caching_at_depth', true, false],
     vertexai_auth_mode: ['#vertexai_auth_mode', 'vertexai_auth_mode', false, true],
     vertexai_region: ['#vertexai_region', 'vertexai_region', false, true],
     vertexai_express_project_id: ['#vertexai_express_project_id', 'vertexai_express_project_id', false, true],
@@ -458,6 +459,7 @@ const default_settings = {
     assistant_prefill: '',
     assistant_impersonation: '',
     use_sysprompt: false,
+    claude_enable_caching_at_depth: false,
     vertexai_auth_mode: 'express',
     vertexai_region: 'us-central1',
     vertexai_express_project_id: '',
@@ -2689,6 +2691,7 @@ export async function createGenerationParameters(settings, model, type, messages
     if (settings.chat_completion_source === chat_completion_sources.CLAUDE) {
         generate_data.top_k = Number(settings.top_k_openai);
         generate_data.use_sysprompt = settings.use_sysprompt;
+        generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
         generate_data.stop = getCustomStoppingStrings(); // Claude shouldn't have limits on stop strings.
         // Don't add a prefill on quiet gens (summarization) and when using continue prefill.
         if (type !== 'quiet' && !(type === 'continue' && settings.continue_prefill)) {
@@ -6621,6 +6624,11 @@ export function initOpenAI() {
 
     $('#use_sysprompt').on('change', function () {
         oai_settings.use_sysprompt = !!$('#use_sysprompt').prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#claude_enable_caching_at_depth').on('change', function () {
+        oai_settings.claude_enable_caching_at_depth = !!$('#claude_enable_caching_at_depth').prop('checked');
         saveSettingsDebounced();
     });
 

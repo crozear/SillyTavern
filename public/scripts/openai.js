@@ -3224,6 +3224,7 @@ function formatPromptVariableValue(value) {
  * Collects local and global variables to pass to reverse proxies.
  * @returns {Record<string, string>|null}
  */
+// eslint-disable-next-line no-unused-vars
 function getPromptVariablesForProxy() {
     const localVariables = chat_metadata?.variables;
     const globalVariables = extension_settings?.variables?.global;

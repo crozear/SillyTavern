@@ -1301,7 +1301,6 @@ async function sendClaudeRequest(request, response) {
         const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
         const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model) && Boolean(request.body.enable_web_search);
         const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-        const useVerbosity = /^claude-(opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
         const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
@@ -2944,10 +2943,10 @@ router.post('/status', async function (request, statusResponse) {
             return statusResponse.status(400).send({ error: true });
         }
 
-    if (request.body.reverse_proxy) {
-        console.info('Reverse proxy detected; skipping upstream status check.');
-        return statusResponse.send({ data: [] });
-    }
+        if (request.body.reverse_proxy) {
+            console.info('Reverse proxy detected; skipping upstream status check.');
+            return statusResponse.send({ data: [] });
+        }
 
         const modelsUrl = new URL(urlJoin(apiUrl, '/models'));
         Object.keys(queryParams).forEach(key => {
@@ -3168,10 +3167,10 @@ function convertToResponsesApiRequest(requestBody) {
     }
 
     // Request reasoning summaries so we can show thinking content
-//    requestBody.include = requestBody.include || [];
-//    if (!requestBody.include.includes('reasoning.encrypted_content')) {
-//        requestBody.include.push('reasoning.encrypted_content');
-//    }
+    //    requestBody.include = requestBody.include || [];
+    //    if (!requestBody.include.includes('reasoning.encrypted_content')) {
+    //        requestBody.include.push('reasoning.encrypted_content');
+    //    }
 
     // Don't store conversations on OpenAI's servers
     requestBody.store = true;
@@ -3191,7 +3190,7 @@ function convertToResponsesApiRequest(requestBody) {
 router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
-    const wordReplacementsEnabled = getWordReplacementEnabled(request);
+        const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
         const postProcessingType = request.body.custom_prompt_post_processing;
         if (Array.isArray(request.body.messages) && postProcessingType) {
@@ -3236,23 +3235,23 @@ router.post('/generate', async function (request, response) {
                 top_logprobs: undefined,
             };
 
-        // Adjust logprobs params for Chat Completions API, which expects { top_logprobs: number; logprobs: boolean; }
-        if (!isTextCompletion && bodyParams.logprobs > 0) {
-            bodyParams.top_logprobs = bodyParams.logprobs;
-            bodyParams.logprobs = true;
-        }
+            // Adjust logprobs params for Chat Completions API, which expects { top_logprobs: number; logprobs: boolean; }
+            if (!isTextCompletion && bodyParams.logprobs > 0) {
+                bodyParams.top_logprobs = bodyParams.logprobs;
+                bodyParams.logprobs = true;
+            }
 
-        if (request.body.reverse_proxy && request.body.verbosity) {
-            bodyParams.verbosity = request.body.verbosity;
-        }
+            if (request.body.reverse_proxy && request.body.verbosity) {
+                bodyParams.verbosity = request.body.verbosity;
+            }
 
-        if (request.body.instructions) {
-            bodyParams.instructions = request.body.instructions;
-        }
+            if (request.body.instructions) {
+                bodyParams.instructions = request.body.instructions;
+            }
 
-        if (request.body.reverse_proxy) {
-            bodyParams.service_tier = 'flex';
-        }
+            if (request.body.reverse_proxy) {
+                bodyParams.service_tier = 'flex';
+            }
             if (getConfigValue('openai.randomizeUserId', false, 'boolean')) {
                 bodyParams['user'] = uuidv4();
             }
@@ -3358,155 +3357,154 @@ router.post('/generate', async function (request, response) {
                 bodyParams.logprobs = true;
             }
 
-        mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
-        mergeObjectWithYaml(headers, request.body.custom_include_headers);
-        embedOpenRouterMedia(request.body.messages, { audio: true, video: false });
+            mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
+            mergeObjectWithYaml(headers, request.body.custom_include_headers);
+            embedOpenRouterMedia(request.body.messages, { audio: true, video: false });
 
-        if (request.body.verbosity) {
-            bodyParams.verbosity = request.body.verbosity;
-        }
+            if (request.body.verbosity) {
+                bodyParams.verbosity = request.body.verbosity;
+            }
 
-        if (request.body.instructions) {
-            bodyParams.instructions = request.body.instructions;
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.PERPLEXITY) {
-        apiUrl = API_PERPLEXITY;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.PERPLEXITY);
-        headers = {};
-        bodyParams = {
-            reasoning_effort: request.body.reasoning_effort,
-        };
-        request.body.messages = postProcessPrompt(request.body.messages, PROMPT_PROCESSING_TYPE.STRICT, getPromptNames(request));
-        if (request.body.json_schema) {
-            bodyParams['response_format'] = {
-                type: 'json_schema',
-                json_schema: {
-                    schema: request.body.json_schema.value,
+            if (request.body.instructions) {
+                bodyParams.instructions = request.body.instructions;
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.PERPLEXITY) {
+            apiUrl = API_PERPLEXITY;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.PERPLEXITY);
+            headers = {};
+            bodyParams = {
+                reasoning_effort: request.body.reasoning_effort,
+            };
+            request.body.messages = postProcessPrompt(request.body.messages, PROMPT_PROCESSING_TYPE.STRICT, getPromptNames(request));
+            if (request.body.json_schema) {
+                bodyParams['response_format'] = {
+                    type: 'json_schema',
+                    json_schema: {
+                        schema: request.body.json_schema.value,
+                    },
+                };
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.GROQ) {
+            apiUrl = API_GROQ;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.GROQ);
+            headers = {};
+            bodyParams = {};
+            if (request.body.json_schema) {
+                bodyParams['response_format'] = {
+                    type: 'json_schema',
+                    json_schema: {
+                        name: request.body.json_schema.name,
+                        description: request.body.json_schema.description,
+                        schema: request.body.json_schema.value,
+                        strict: request.body.json_schema.strict ?? true,
+                    },
+                };
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.FIREWORKS) {
+            apiUrl = API_FIREWORKS;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.FIREWORKS);
+            headers = {};
+            bodyParams = {};
+            if (request.body.json_schema) {
+                bodyParams['response_format'] = {
+                    type: 'json_schema',
+                    json_schema: {
+                        name: request.body.json_schema.name,
+                        description: request.body.json_schema.description,
+                        schema: request.body.json_schema.value,
+                        strict: request.body.json_schema.strict ?? true,
+                    },
+                };
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.NANOGPT) {
+            apiUrl = API_NANOGPT;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.NANOGPT);
+            headers = {};
+            bodyParams = {};
+            if (request.body.enable_web_search && !/:online$/.test(request.body.model)) {
+                request.body.model = `${request.body.model}:online`;
+            }
+            if (request.body.min_p !== undefined) {
+                bodyParams['min_p'] = request.body.min_p;
+            }
+            if (request.body.top_a !== undefined) {
+                bodyParams['top_a'] = request.body.top_a;
+            }
+            if (request.body.repetition_penalty !== undefined) {
+                bodyParams['repetition_penalty'] = request.body.repetition_penalty;
+            }
+            if (request.body.reasoning_effort) {
+                const effort = NANOGPT_REASONING_EFFORT_MAP[request.body.reasoning_effort];
+                bodyParams['reasoning'] = { effort: effort };
+            }
+
+            const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
+            const isClaude3or4 = /claude-(3|opus-4|sonnet-4)/.test(request.body.model);
+            const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '1h' : '5m';
+            if (enableSystemPromptCache && isClaude3or4) {
+                bodyParams['cache_control'] = {
+                    'enabled': true,
+                    'ttl': cacheTTL,
+                };
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {
+            apiUrl = API_POLLINATIONS;
+            apiKey = 'NONE';
+            headers = {
+                'Authorization': '',
+            };
+            bodyParams = {
+                reasoning_effort: request.body.reasoning_effort,
+                private: true,
+                referrer: 'sillytavern',
+                seed: request.body.seed ?? Math.floor(Math.random() * 99999999),
+            };
+            if (request.body.json_schema) {
+                setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MOONSHOT) {
+            apiUrl = API_MOONSHOT;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
+            headers = {};
+            bodyParams = {};
+            request.body.json_schema
+                ? setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema)
+                : addAssistantPrefix(request.body.messages, [], 'partial');
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.COMETAPI) {
+            apiUrl = API_COMETAPI;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.COMETAPI);
+            headers = {};
+            bodyParams = {
+                reasoning_effort: request.body.reasoning_effort,
+            };
+            throw new Error('This provider is temporarily disabled.');
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.ZAI) {
+            const defaultApiUrl = request.body.zai_endpoint === ZAI_ENDPOINT.CODING ? API_ZAI_CODING : API_ZAI_COMMON;
+            apiUrl = new URL(request.body.reverse_proxy || defaultApiUrl).toString();
+            apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.ZAI);
+            headers = {
+                'Accept-Language': 'en-US,en',
+            };
+            bodyParams = {
+                thinking: {
+                    type: request.body.include_reasoning ? 'enabled' : 'disabled',
                 },
             };
+            if (request.body.json_schema) {
+                setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.SILICONFLOW) {
+            apiUrl = API_SILICONFLOW;
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.SILICONFLOW);
+            headers = {};
+            bodyParams = {};
+            if (request.body.json_schema) {
+                setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
+            }
+        } else {
+            console.warn('This chat completion source is not supported yet.');
+            return response.status(400).send({ error: true });
         }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.GROQ) {
-        apiUrl = API_GROQ;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.GROQ);
-        headers = {};
-        bodyParams = {};
-        if (request.body.json_schema) {
-            bodyParams['response_format'] = {
-                type: 'json_schema',
-                json_schema: {
-                    name: request.body.json_schema.name,
-                    description: request.body.json_schema.description,
-                    schema: request.body.json_schema.value,
-                    strict: request.body.json_schema.strict ?? true,
-                },
-            };
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.FIREWORKS) {
-        apiUrl = API_FIREWORKS;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.FIREWORKS);
-        headers = {};
-        bodyParams = {};
-        if (request.body.json_schema) {
-            bodyParams['response_format'] = {
-                type: 'json_schema',
-                json_schema: {
-                    name: request.body.json_schema.name,
-                    description: request.body.json_schema.description,
-                    schema: request.body.json_schema.value,
-                    strict: request.body.json_schema.strict ?? true,
-                },
-            };
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.NANOGPT) {
-        apiUrl = API_NANOGPT;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.NANOGPT);
-        headers = {};
-        bodyParams = {};
-        if (request.body.enable_web_search && !/:online$/.test(request.body.model)) {
-            request.body.model = `${request.body.model}:online`;
-        }
-        if (request.body.min_p !== undefined) {
-            bodyParams['min_p'] = request.body.min_p;
-        }
-        if (request.body.top_a !== undefined) {
-            bodyParams['top_a'] = request.body.top_a;
-        }
-        if (request.body.repetition_penalty !== undefined) {
-            bodyParams['repetition_penalty'] = request.body.repetition_penalty;
-        }
-        if (request.body.reasoning_effort) {
-            const effort = NANOGPT_REASONING_EFFORT_MAP[request.body.reasoning_effort];
-            bodyParams['reasoning'] = { effort: effort };
-        }
-
-        const isClaude = /^claude-/.test(request.body.model);
-        const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
-        const isClaude3or4 = /claude-(3|opus-4|sonnet-4)/.test(request.body.model);
-        const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '1h' : '5m';
-        if (enableSystemPromptCache && isClaude3or4) {
-            bodyParams['cache_control'] = {
-                'enabled': true,
-                'ttl': cacheTTL,
-            };
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {
-        apiUrl = API_POLLINATIONS;
-        apiKey = 'NONE';
-        headers = {
-            'Authorization': '',
-        };
-        bodyParams = {
-            reasoning_effort: request.body.reasoning_effort,
-            private: true,
-            referrer: 'sillytavern',
-            seed: request.body.seed ?? Math.floor(Math.random() * 99999999),
-        };
-        if (request.body.json_schema) {
-            setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MOONSHOT) {
-        apiUrl = API_MOONSHOT;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
-        headers = {};
-        bodyParams = {};
-        request.body.json_schema
-            ? setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema)
-            : addAssistantPrefix(request.body.messages, [], 'partial');
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.COMETAPI) {
-        apiUrl = API_COMETAPI;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.COMETAPI);
-        headers = {};
-        bodyParams = {
-            reasoning_effort: request.body.reasoning_effort,
-        };
-        throw new Error('This provider is temporarily disabled.');
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.ZAI) {
-        const defaultApiUrl = request.body.zai_endpoint === ZAI_ENDPOINT.CODING ? API_ZAI_CODING : API_ZAI_COMMON;
-        apiUrl = new URL(request.body.reverse_proxy || defaultApiUrl).toString();
-        apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.ZAI);
-        headers = {
-            'Accept-Language': 'en-US,en',
-        };
-        bodyParams = {
-            thinking: {
-                type: request.body.include_reasoning ? 'enabled' : 'disabled',
-            },
-        };
-        if (request.body.json_schema) {
-            setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
-        }
-    } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.SILICONFLOW) {
-        apiUrl = API_SILICONFLOW;
-        apiKey = readSecret(request.user.directories, SECRET_KEYS.SILICONFLOW);
-        headers = {};
-        bodyParams = {};
-        if (request.body.json_schema) {
-            setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
-        }
-    } else {
-        console.warn('This chat completion source is not supported yet.');
-        return response.status(400).send({ error: true });
-    }
 
         // A few of OpenAIs reasoning models support reasoning effort
         if (request.body.reasoning_effort && [CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
@@ -3522,7 +3520,7 @@ router.post('/generate', async function (request, response) {
         }
 
         if ([CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
-                bodyParams['service_tier'] = 'flex';
+            bodyParams['service_tier'] = 'flex';
         }
 
         if (!apiKey && !request.body.reverse_proxy && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
@@ -3570,12 +3568,12 @@ router.post('/generate', async function (request, response) {
         }
 
         const promptReference = isTextCompletion === true
-        ? textPrompt
-        : (request.body.reverse_proxy && request.body.prompt && typeof request.body.prompt === 'object' && !Array.isArray(request.body.prompt)
-            ? request.body.prompt
-            : undefined);
+            ? textPrompt
+            : (request.body.reverse_proxy && request.body.prompt && typeof request.body.prompt === 'object' && !Array.isArray(request.body.prompt)
+                ? request.body.prompt
+                : undefined);
 
-    const requestBody = {
+        const requestBody = {
             'messages': isTextCompletion === false ? request.body.messages : undefined,
             'prompt': promptReference,
             'model': request.body.model,
@@ -3624,14 +3622,14 @@ router.post('/generate', async function (request, response) {
 
         const fetchResponse = await fetch(endpointUrl, config);
 
-            if (request.body.stream) {
-                console.info('Streaming request in progress');
-                if (useResponsesApi) {
-                    response.setHeader('X-Response-Format', 'responses');
-                }
-                forwardFetchResponseWithWordReplacements(fetchResponse, response, wordReplacementsEnabled);
-                return;
+        if (request.body.stream) {
+            console.info('Streaming request in progress');
+            if (useResponsesApi) {
+                response.setHeader('X-Response-Format', 'responses');
             }
+            forwardFetchResponseWithWordReplacements(fetchResponse, response, wordReplacementsEnabled);
+            return;
+        }
 
         if (fetchResponse.ok) {
             /** @type {any} */

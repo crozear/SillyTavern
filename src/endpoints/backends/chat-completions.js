@@ -3520,7 +3520,7 @@ router.post('/generate', async function (request, response) {
         }
 
         if ([CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
-            bodyParams['service_tier'] = 'flex';
+            bodyParams['service_tier'] = request.body.service_tier;
         }
 
         if (!apiKey && !request.body.reverse_proxy && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {

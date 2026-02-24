@@ -93,7 +93,7 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 /**
  * Module-scoped Claude caching configuration values.
  */
-const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '1h' : '5m';
+const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
 const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
 const cachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
@@ -1367,7 +1367,6 @@ async function sendClaudeRequest(request, response) {
 
         if (enableSystemPromptCache || cachingAtDepth !== -1) {
             betaHeaders.push('prompt-caching-2024-07-31');
-            betaHeaders.push('extended-cache-ttl-2025-04-11');
         }
 
         if (isLimitedSampling) {
@@ -3440,7 +3439,7 @@ router.post('/generate', async function (request, response) {
 
             const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
             const isClaude3or4 = /claude-(3|opus-4|sonnet-4)/.test(request.body.model);
-            const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '1h' : '5m';
+            const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
             if (enableSystemPromptCache && isClaude3or4) {
                 bodyParams['cache_control'] = {
                     'enabled': true,

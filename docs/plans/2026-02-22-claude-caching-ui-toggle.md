@@ -168,7 +168,6 @@ When `cachingAtDepth === 0`, the existing code path at ~line 1363 will push `'pr
 ```js
     if (enableSystemPromptCache || cachingAtDepth !== -1) {
         betaHeaders.push('prompt-caching-2024-07-31');
-        betaHeaders.push('extended-cache-ttl-2025-04-11');
     }
 ```
 No change needed there — it already handles `cachingAtDepth !== -1`.

@@ -721,7 +721,7 @@ export function parseExampleIntoIndividual(messageExampleString, appendNamesForG
             parsed_msg = `${name}: ${parsed_msg}`;
         }
 
-        result.push({ 'role': role, 'content': parsed_msg, 'name': system_name });
+        result.push({ 'role': role, 'content': parsed_msg, system_name });
         cur_msg_lines = [];
     }
     // skip first line as it'll always be "This is how {bot name} should talk"

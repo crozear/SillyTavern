@@ -3175,6 +3175,7 @@ function convertToResponsesApiRequest(requestBody) {
     requestBody.store = true;
 
     // Remove unsupported parameters
+    delete requestBody.top_k;
     delete requestBody.n;
     delete requestBody.logit_bias;
     delete requestBody.logprobs;
@@ -3603,6 +3604,10 @@ router.post('/generate', async function (request, response) {
         // GPT 5.2 does not support top_p
         if (request.body.model?.startsWith('gpt-5.2')) {
             delete requestBody.top_p;
+        }
+
+        if (request.body.model?.startsWith('gpt') && requestBody.top_k !== undefined) {
+            delete requestBody.top_k;
         }
 
         /** @type {import('node-fetch').RequestInit} */

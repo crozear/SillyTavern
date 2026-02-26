@@ -93,7 +93,6 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 /**
  * Module-scoped Claude caching configuration values.
  */
-const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
 const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
 const cachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
@@ -1322,7 +1321,7 @@ async function sendClaudeRequest(request, response) {
         };
         if (useSystemPrompt) {
             if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
             }
 
             requestBody.system = convertedPrompt.systemPrompt;
@@ -1338,7 +1337,7 @@ async function sendClaudeRequest(request, response) {
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
             if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
             }
         }
 
@@ -1362,7 +1361,7 @@ async function sendClaudeRequest(request, response) {
         }
 
         if (cachingAtDepth !== -1) {
-            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
+            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, '5m');
         }
 
         if (enableSystemPromptCache || cachingAtDepth !== -1) {
@@ -2477,11 +2476,11 @@ async function sendElectronHubRequest(request, response) {
 
         if (Array.isArray(request.body.messages) && isClaude) {
             if (enableSystemPromptCache) {
-                cachingSystemPromptForOpenRouter(request.body.messages, cacheTTL);
+                cachingSystemPromptForOpenRouter(request.body.messages, '5m');
             }
 
             if (cachingAtDepth !== -1) {
-                cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, cacheTTL);
+                cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, '5m');
             }
         }
 
@@ -3326,11 +3325,11 @@ router.post('/generate', async function (request, response) {
 
                 if (isClaude) {
                     if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages, cacheTTL);
+                        cachingSystemPromptForOpenRouter(request.body.messages, '5m');
                     }
 
                     if (cachingAtDepth !== -1) {
-                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, cacheTTL);
+                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, '5m');
                     }
                 }
 
@@ -3439,12 +3438,12 @@ router.post('/generate', async function (request, response) {
             }
 
             const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
-            const isClaude3or4 = /claude-(3|opus-4|sonnet-4)/.test(request.body.model);
-            const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
+            const isClaude3or4 = /claude-(3|opus-4|sonnet-4|opus-4-5|sonnet-4-5|opus-4-6|sonnet-4-6|opus-4-1)/.test(request.body.model);
+
             if (enableSystemPromptCache && isClaude3or4) {
                 bodyParams['cache_control'] = {
                     'enabled': true,
-                    'ttl': cacheTTL,
+                    'ttl': '5m',
                 };
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {

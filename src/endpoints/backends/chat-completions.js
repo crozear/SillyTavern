@@ -1364,10 +1364,6 @@ async function sendClaudeRequest(request, response) {
             cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth);
         }
 
-        if (enableSystemPromptCache || cachingAtDepth !== -1) {
-            betaHeaders.push('prompt-caching-2024-07-31');
-        }
-
         if (isLimitedSampling) {
             if (requestBody.top_p < 1) {
                 delete requestBody.temperature;

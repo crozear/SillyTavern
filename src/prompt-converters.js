@@ -980,8 +980,9 @@ export function convertTextCompletionPrompt(messages) {
  * Append cache_control object to a Claude messages at depth. Directly modifies the messages array.
  * @param {any[]} messages Messages to modify
  * @param {number} cachingAtDepth Depth at which caching is supposed to occur
+ * @param {string} ttl TTL value
  */
-export function cachingAtDepthForClaude(messages, cachingAtDepth) {
+export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
     let passedThePrefill = false;
     let depth = 0;
     let previousRoleName = '';
@@ -996,7 +997,7 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth) {
         if (messages[i].role !== previousRoleName) {
             if (depth === cachingAtDepth || depth === cachingAtDepth + 2) {
                 const content = messages[i].content;
-                content[content.length - 1].cache_control = { type: 'ephemeral' };
+                content[content.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
             }
 
             if (depth === cachingAtDepth + 2) {
@@ -1014,8 +1015,9 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth) {
  * messages array.
  * @param {object[]} messages Array of messages
  * @param {number} cachingAtDepth Depth at which caching is supposed to occur
+ * @param {string} ttl TTL value
  */
-export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
+export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth, ttl) {
     //caching the prefill is a terrible idea in general
     let passedThePrefill = false;
     //depth here is the number of message role switches
@@ -1035,11 +1037,14 @@ export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
                     messages[i].content = [{
                         type: 'text',
                         text: content,
-                        cache_control: { type: 'ephemeral' },
+                        cache_control: { type: 'ephemeral', ttl: '5m' },
                     }];
                 } else {
                     const contentPartCount = content.length;
-                    content[contentPartCount - 1].cache_control = { type: 'ephemeral' };
+                    content[contentPartCount - 1].cache_control = {
+                        type: 'ephemeral',
+                        ttl: '5m',
+                    };
                 }
             }
 
@@ -1057,8 +1062,9 @@ export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth) {
  * Adds cache_control to the system prompt for OpenRouter requests.
  *
  * @param {object[]} messages Array of messages
+ * @param {string} [ttl] TTL value (optional)
  */
-export function cachingSystemPromptForOpenRouter(messages) {
+export function cachingSystemPromptForOpenRouter(messages, ttl = undefined) {
     if (!Array.isArray(messages) || messages.length === 0) {
         return;
     }
@@ -1074,7 +1080,9 @@ export function cachingSystemPromptForOpenRouter(messages) {
         return;
     }
 
-    const cacheControl = { type: 'ephemeral' };
+    const cacheControl = ttl
+        ? { type: 'ephemeral', ttl }
+        : { type: 'ephemeral' };
 
     if (Array.isArray(systemMessage.content)) {
         const hasExistingCacheControl = systemMessage.content.some(part => part?.cache_control);

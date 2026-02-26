@@ -93,6 +93,7 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 /**
  * Module-scoped Claude caching configuration values.
  */
+const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
 const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
 const cachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
@@ -1321,7 +1322,7 @@ async function sendClaudeRequest(request, response) {
         };
         if (useSystemPrompt) {
             if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral' };
+                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
 
             requestBody.system = convertedPrompt.systemPrompt;
@@ -1337,7 +1338,7 @@ async function sendClaudeRequest(request, response) {
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
             if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral' };
+                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
         }
 
@@ -1361,7 +1362,12 @@ async function sendClaudeRequest(request, response) {
         }
 
         if (cachingAtDepth !== -1) {
-            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth);
+            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
+        }
+
+        if (enableSystemPromptCache || cachingAtDepth !== -1) {
+            betaHeaders.push('prompt-caching-2024-07-31');
+            betaHeaders.push('extended-cache-ttl-2025-04-11');
         }
 
         if (isLimitedSampling) {
@@ -3236,17 +3242,6 @@ router.post('/generate', async function (request, response) {
                 bodyParams.logprobs = true;
             }
 
-            if (request.body.reverse_proxy && request.body.verbosity) {
-                bodyParams.verbosity = request.body.verbosity;
-            }
-
-            if (request.body.instructions) {
-                bodyParams.instructions = request.body.instructions;
-            }
-
-            if (request.body.reverse_proxy) {
-                bodyParams.service_tier = 'flex';
-            }
             if (getConfigValue('openai.randomizeUserId', false, 'boolean')) {
                 bodyParams['user'] = uuidv4();
             }
@@ -3321,11 +3316,11 @@ router.post('/generate', async function (request, response) {
 
                 if (isClaude) {
                     if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages);
+                        cachingSystemPromptForOpenRouter(request.body.messages, cacheTTL);
                     }
 
                     if (cachingAtDepth !== -1) {
-                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth);
+                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, cacheTTL);
                     }
                 }
 
@@ -3355,14 +3350,6 @@ router.post('/generate', async function (request, response) {
             mergeObjectWithYaml(bodyParams, request.body.custom_include_body);
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
             embedOpenRouterMedia(request.body.messages, { audio: true, video: false });
-
-            if (request.body.verbosity) {
-                bodyParams.verbosity = request.body.verbosity;
-            }
-
-            if (request.body.instructions) {
-                bodyParams.instructions = request.body.instructions;
-            }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.PERPLEXITY) {
             apiUrl = API_PERPLEXITY;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.PERPLEXITY);
@@ -3439,6 +3426,7 @@ router.post('/generate', async function (request, response) {
             if (enableSystemPromptCache && isClaude3or4) {
                 bodyParams['cache_control'] = {
                     'enabled': true,
+                    'ttl': cacheTTL,
                 };
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {

@@ -1366,6 +1366,7 @@ async function sendClaudeRequest(request, response) {
 
         if (enableSystemPromptCache || cachingAtDepth !== -1) {
             betaHeaders.push('prompt-caching-2024-07-31');
+            betaHeaders.push('extended-cache-ttl-2025-04-11');
         }
 
         if (isLimitedSampling) {

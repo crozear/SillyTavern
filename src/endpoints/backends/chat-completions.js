@@ -1321,7 +1321,7 @@ async function sendClaudeRequest(request, response) {
         };
         if (useSystemPrompt) {
             if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
+                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral' };
             }
 
             requestBody.system = convertedPrompt.systemPrompt;
@@ -1337,7 +1337,7 @@ async function sendClaudeRequest(request, response) {
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
             if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
+                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral' };
             }
         }
 
@@ -1361,12 +1361,11 @@ async function sendClaudeRequest(request, response) {
         }
 
         if (cachingAtDepth !== -1) {
-            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, '5m');
+            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth);
         }
 
         if (enableSystemPromptCache || cachingAtDepth !== -1) {
             betaHeaders.push('prompt-caching-2024-07-31');
-            betaHeaders.push('extended-cache-ttl-2025-04-11');
         }
 
         if (isLimitedSampling) {
@@ -3326,11 +3325,11 @@ router.post('/generate', async function (request, response) {
 
                 if (isClaude) {
                     if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages, '5m');
+                        cachingSystemPromptForOpenRouter(request.body.messages);
                     }
 
                     if (cachingAtDepth !== -1) {
-                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, '5m');
+                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth);
                     }
                 }
 
@@ -3444,7 +3443,6 @@ router.post('/generate', async function (request, response) {
             if (enableSystemPromptCache && isClaude3or4) {
                 bodyParams['cache_control'] = {
                     'enabled': true,
-                    'ttl': '5m',
                 };
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {

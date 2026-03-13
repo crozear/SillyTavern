@@ -2251,6 +2251,23 @@ function saveModelList(data) {
 
         $('#model_moonshot_select').val(oai_settings.moonshot_model).trigger('change');
     }
+
+    if (oai_settings.chat_completion_source == chat_completion_sources.CLAUDE) {
+        const select = $('#model_claude_select');
+        select.find('optgroup').empty();
+
+        model_list.forEach((model) => {
+            select.find('optgroup').append(new Option(model.id, model.id));
+        });
+
+        if (model_list.length > 0) {
+            const selectedModel = model_list.find(model => model.id === oai_settings.claude_model);
+            if (!selectedModel) {
+                oai_settings.claude_model = model_list[0].id;
+            }
+            select.val(oai_settings.claude_model).trigger('change');
+        }
+    }
 }
 
 function appendOpenRouterOptions(model_list, groupModels = false, sort = false) {
@@ -4321,7 +4338,6 @@ function setContinuePostfixControls() {
 
 async function getStatusOpen() {
     const noValidateSources = [
-        chat_completion_sources.CLAUDE,
         chat_completion_sources.AI21,
         chat_completion_sources.VERTEXAI,
         chat_completion_sources.PERPLEXITY,

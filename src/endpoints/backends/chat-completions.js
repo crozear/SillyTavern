@@ -2851,6 +2851,39 @@ router.post('/status', async function (request, statusResponse) {
                 console.error('Error fetching Google AI Studio models:', error);
                 return statusResponse.send({ error: true, bypass: true, data: { data: [] } });
             }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CLAUDE) {
+            const apiKey = readSecret(request.user.directories, SECRET_KEYS.CLAUDE);
+
+            if (!apiKey) {
+                console.warn('Claude API key is missing.');
+                return statusResponse.status(400).send({ error: true });
+            }
+
+            try {
+                const modelsUrl = new URL(urlJoin(API_CLAUDE, '/models'));
+                modelsUrl.searchParams.set('limit', '100');
+                const response = await fetch(modelsUrl, {
+                    method: 'GET',
+                    headers: {
+                        'x-api-key': apiKey,
+                        'anthropic-version': '2023-06-01',
+                    },
+                });
+
+                if (response.ok) {
+                    /** @type {any} */
+                    const data = await response.json();
+                    const models = (data.data || []).map(model => ({ id: model.id }));
+                    console.info('Available Claude models:', models.map(m => m.id));
+                    return statusResponse.send({ data: models });
+                } else {
+                    console.warn('Claude models endpoint failed:', response.status, response.statusText);
+                    return statusResponse.send({ error: true, data: [] });
+                }
+            } catch (error) {
+                console.error('Error fetching Claude models:', error);
+                return statusResponse.send({ error: true, data: [] });
+            }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.AZURE_OPENAI) {
             const { azure_base_url, azure_deployment_name, azure_api_version } = request.body;
             const apiKey = readSecret(request.user.directories, SECRET_KEYS.AZURE_OPENAI);

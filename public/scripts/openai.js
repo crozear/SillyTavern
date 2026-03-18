@@ -242,6 +242,7 @@ export const reasoning_effort_types = {
     high: 'high',
     min: 'min',
     max: 'max',
+    xhigh: 'xhigh',
 };
 
 export const verbosity_levels = {
@@ -2482,11 +2483,13 @@ function getReasoningEffort(settings = null, model = null) {
             case reasoning_effort_types.auto:
                 return undefined;
             case reasoning_effort_types.min:
-                return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5/.test(model)
+                return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5$/.test(model)
                     ? reasoning_effort_types.min
                     : reasoning_effort_types.low;
             case reasoning_effort_types.max:
-                return reasoning_effort_types.high;
+                return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5.(2|4)/.test(model)
+                    ? reasoning_effort_types.xhigh
+                    : reasoning_effort_types.high;
             default:
                 return settings.reasoning_effort;
         }
@@ -4941,7 +4944,7 @@ function getMaxContextOpenAI(value) {
     if (oai_settings.max_context_unlocked) {
         return unlocked_max;
     }
-    else if (value.startsWith('gpt-5')) {
+    else if (value.includes('gpt-5')) {
         return max_400k;
     }
     else if (value.includes('gpt-4.1')) {

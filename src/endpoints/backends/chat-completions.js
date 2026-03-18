@@ -3616,8 +3616,8 @@ router.post('/generate', async function (request, response) {
             convertToResponsesApiRequest(requestBody);
         }
 
-        // GPT 5.2 does not support top_p
-        if (request.body.model?.startsWith('gpt-5.2')) {
+        // GPT 5 onwards does not support top_p
+        if (request.body.model?.startsWith('gpt-5') && requestBody.top_p !== undefined) {
             delete requestBody.top_p;
         }
 

@@ -3164,9 +3164,11 @@ router.post('/bias', async function (request, response) {
  * @param {object} requestBody The request body to transform
  */
 function convertToResponsesApiRequest(requestBody) {
-    // messages → input (the formats are compatible per OpenAI docs)
+    // messages → input, converting system role → developer role
     if (requestBody.messages) {
-        requestBody.input = requestBody.messages;
+        requestBody.input = requestBody.messages.map(msg =>
+            msg.role === 'system' ? { ...msg, role: 'developer' } : msg,
+        );
         delete requestBody.messages;
     }
 

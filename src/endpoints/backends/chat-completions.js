@@ -3164,11 +3164,23 @@ router.post('/bias', async function (request, response) {
  * @param {object} requestBody The request body to transform
  */
 function convertToResponsesApiRequest(requestBody) {
-    // messages → input, converting system role → developer role
+    // messages → input; first system message → instructions param, rest → developer role
     if (requestBody.messages) {
-        requestBody.input = requestBody.messages.map(msg =>
-            msg.role === 'system' ? { ...msg, role: 'developer' } : msg,
-        );
+        let firstSystemUsed = false;
+        const input = [];
+        for (const msg of requestBody.messages) {
+            if (msg.role === 'system' && !firstSystemUsed) {
+                requestBody.instructions = typeof msg.content === 'string'
+                    ? msg.content
+                    : msg.content.map(p => p.text ?? '').join('');
+                firstSystemUsed = true;
+            } else if (msg.role === 'system') {
+                input.push({ ...msg, role: 'developer' });
+            } else {
+                input.push(msg);
+            }
+        }
+        requestBody.input = input;
         delete requestBody.messages;
     }
 
@@ -3211,6 +3223,12 @@ function convertToResponsesApiRequest(requestBody) {
     requestBody.store = true;
 
     // Remove unsupported parameters
+    if (!requestBody.reasoning.effort || requestBody.reasoning.effort === 'none') {
+        delete requestBody.reasoning;
+    } else {
+        delete requestBody.temperature;
+        delete requestBody.top_p;
+    }
     delete requestBody.top_k;
     delete requestBody.n;
     delete requestBody.logit_bias;
@@ -3525,7 +3543,7 @@ router.post('/generate', async function (request, response) {
 
         // A few of OpenAIs reasoning models support reasoning effort
         if (request.body.reasoning_effort && [CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
-            if (OPENAI_REASONING_EFFORT_MODELS.includes(request.body.model)) {
+            if (OPENAI_REASONING_EFFORT_MODELS.includes(request.body.model) && request.body.reasoning_effort !== 'none') {
                 bodyParams['reasoning_effort'] = OPENAI_REASONING_EFFORT_MAP[request.body.reasoning_effort] ?? request.body.reasoning_effort;
             }
         }
@@ -3616,11 +3634,6 @@ router.post('/generate', async function (request, response) {
         // Transform request body for the OpenAI Responses API
         if (useResponsesApi) {
             convertToResponsesApiRequest(requestBody);
-        }
-
-        // GPT 5 onwards does not support top_p
-        if (request.body.model?.startsWith('gpt-5') && requestBody.top_p !== undefined) {
-            delete requestBody.top_p;
         }
 
         if (request.body.model?.startsWith('gpt') && requestBody.top_k !== undefined) {

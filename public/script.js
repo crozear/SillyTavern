@@ -467,6 +467,7 @@ export const extension_prompt_roles = {
     SYSTEM: 0,
     USER: 1,
     ASSISTANT: 2,
+    DEVELOPER: 3,
 };
 
 export const MAX_INJECTION_DEPTH = 10000;

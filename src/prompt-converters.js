@@ -3,6 +3,19 @@ import { getConfigValue, tryParse } from './util.js';
 
 const PROMPT_PLACEHOLDER = getConfigValue('promptPlaceholder', 'Let\'s get started.');
 
+/**
+ * Normalizes developer role messages to system role.
+ * The developer role is OpenAI-specific; other providers treat it as system.
+ * @param {object[]} messages Array of messages
+ */
+function normalizeDeveloperRole(messages) {
+    messages.forEach((msg) => {
+        if (msg.role === 'developer') {
+            msg.role = 'system';
+        }
+    });
+}
+
 const REASONING_EFFORT = {
     auto: 'auto',
     low: 'low',
@@ -196,6 +209,8 @@ export function convertClaudePrompt(messages, addAssistantPostfix, addAssistantP
  * @returns {{messages: object[], systemPrompt: object[]}} Prompt for Anthropic
  */
 export function convertClaudeMessages(messages, prefillString, useSysPrompt, useTools, names) {
+    normalizeDeveloperRole(messages);
+
     let systemPrompt = [];
     if (useSysPrompt) {
         // Collect all the system messages up until the first instance of a non-system message, and then remove them from the messages array.
@@ -385,6 +400,7 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
  * @returns {{chatHistory: object[]}} Prompt for Cohere
  */
 export function convertCohereMessages(messages, names) {
+    normalizeDeveloperRole(messages);
     if (messages.length === 0) {
         messages.unshift({
             role: 'user',
@@ -433,6 +449,7 @@ export function convertCohereMessages(messages, names) {
  * @returns {{contents: *[], system_instruction: {parts: {text: string}[]}}} Prompt for Google MakerSuite models
  */
 export function convertGooglePrompt(messages, model, useSysPrompt, names) {
+    normalizeDeveloperRole(messages);
     const sysPrompt = [];
 
     if (useSysPrompt) {
@@ -628,6 +645,7 @@ export function convertGooglePrompt(messages, model, useSysPrompt, names) {
  * @returns {object[]} Prompt for AI21
  */
 export function convertAI21Messages(messages, names) {
+    normalizeDeveloperRole(messages);
     if (!Array.isArray(messages)) {
         return [];
     }
@@ -700,6 +718,7 @@ export function convertAI21Messages(messages, names) {
  * @returns {object[]} Prompt for MistralAI
  */
 export function convertMistralMessages(messages, names) {
+    normalizeDeveloperRole(messages);
     if (!Array.isArray(messages)) {
         return [];
     }
@@ -782,6 +801,7 @@ export function convertMistralMessages(messages, names) {
  * @returns {object[]} Prompt for xAI
  */
 export function convertXAIMessages(messages, names) {
+    normalizeDeveloperRole(messages);
     if (!Array.isArray(messages)) {
         return [];
     }
@@ -1136,7 +1156,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream) 
             budgetTokens = Math.floor(maxTokens * 0.5);
             break;
         case REASONING_EFFORT.max:
-            budgetTokens = Math.floor(maxTokens * 0.95);
+            budgetTokens = Math.floor(maxTokens * 0.9);
             break;
     }
 

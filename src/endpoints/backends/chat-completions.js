@@ -3167,15 +3167,13 @@ function convertToResponsesApiRequest(requestBody) {
         let firstSystemUsed = false;
         const input = [];
         for (const msg of requestBody.messages) {
-            if (msg.role === 'system' && !firstSystemUsed) {
+            if (msg.role === 'developer' && !firstSystemUsed) {
                 requestBody.instructions = typeof msg.content === 'string'
                     ? msg.content
                     : msg.content.map(p => p.text ?? '').join('');
                 firstSystemUsed = true;
-            } else if (msg.role === 'system') {
-                input.push({ ...msg, role: 'developer' });
             } else {
-                input.push(msg);
+                input.push({ role: msg.role, content: msg.content, ...(msg.name ? { name: msg.name } : {}) });
             }
         }
         requestBody.input = input;

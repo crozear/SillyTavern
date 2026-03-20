@@ -107,6 +107,7 @@ function setNoteRoleCommand(_, text) {
         'system': 0,
         'user': 1,
         'assistant': 2,
+        'developer': 3,
     };
 
     if (text) {
@@ -572,7 +573,7 @@ export function initAuthorsNote() {
         namedArgumentList: [],
         unnamedArgumentList: [
             new SlashCommandArgument(
-                'role', [ARGUMENT_TYPE.STRING], false, false, null, ['system', 'user', 'assistant'],
+                'role', [ARGUMENT_TYPE.STRING], false, false, null, ['system', 'developer', 'user', 'assistant'],
             ),
         ],
         helpString: `

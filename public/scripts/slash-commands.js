@@ -3178,6 +3178,7 @@ function injectCallback(args, value) {
     };
     const roles = {
         'system': extension_prompt_roles.SYSTEM,
+        'developer': extension_prompt_roles.DEVELOPER,
         'user': extension_prompt_roles.USER,
         'assistant': extension_prompt_roles.ASSISTANT,
     };

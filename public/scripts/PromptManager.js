@@ -1734,6 +1734,7 @@ class PromptManager {
             const promptRoles = {
                 assistant: { roleIcon: 'fa-robot', roleTitle: 'Prompt will be sent as Assistant' },
                 user: { roleIcon: 'fa-user', roleTitle: 'Prompt will be sent as User' },
+                developer: { roleIcon: 'fa-screwdriver-wrench', roleTitle: 'Prompt will be sent as Developer' },
             };
             const roleIcon = promptRoles[iconLookup]?.roleIcon || '';
             const roleTitle = promptRoles[iconLookup]?.roleTitle || '';

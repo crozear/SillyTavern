@@ -789,6 +789,7 @@ async function populationInjectionPrompts(prompts, messages) {
 
     const roleTypes = {
         'system': extension_prompt_roles.SYSTEM,
+        'developer': extension_prompt_roles.DEVELOPER,
         'user': extension_prompt_roles.USER,
         'assistant': extension_prompt_roles.ASSISTANT,
     };
@@ -821,7 +822,7 @@ async function populationInjectionPrompts(prompts, messages) {
             const orderPrompts = orderGroups[order];
 
             // Order of priority for roles (most important go lower)
-            const roles = ['system', 'user', 'assistant'];
+            const roles = ['system', 'developer', 'user', 'assistant'];
             for (const role of roles) {
                 const rolePrompts = orderPrompts
                     .filter(prompt => prompt.role === role)
@@ -1077,6 +1078,8 @@ export function getPromptRole(role) {
     switch (role) {
         case extension_prompt_roles.SYSTEM:
             return 'system';
+        case extension_prompt_roles.DEVELOPER:
+            return 'developer';
         case extension_prompt_roles.USER:
             return 'user';
         case extension_prompt_roles.ASSISTANT:
@@ -2887,13 +2890,13 @@ export async function createGenerationParameters(settings, model, type, messages
         if (/gpt-5-chat-latest/.test(model)) {
             delete generate_data.tools;
             delete generate_data.tool_choice;
-        } else if (/gpt-5/.test(model) && !/chat-latest/.test(model)) {
+        } else if (/gpt-5./.test(model) && !/chat-latest/.test(model)) {
             delete generate_data.frequency_penalty;
             delete generate_data.presence_penalty;
             delete generate_data.logit_bias;
             delete generate_data.stop;
         } else {
-            delete generate_data.temperature;
+            generate_data.temperature = 1.0;
             delete generate_data.top_p;
             delete generate_data.frequency_penalty;
             delete generate_data.presence_penalty;
@@ -3831,12 +3834,12 @@ export class ChatCompletion {
 
         for (let message of this.messages.collection) {
             // Force exclude empty messages
-            if (message.role === 'system' && !message.content) {
+            if (message.role === 'system' || message.role === 'developer' && !message.content) {
                 continue;
             }
 
             const shouldSquash = (message) => {
-                return !excludeList.includes(message.identifier) && message.role === 'system' && !message.name;
+                return !excludeList.includes(message.identifier) && message.role === 'system' || message.role === 'developer' && !message.name;
             };
 
             if (shouldSquash(message)) {
@@ -6002,6 +6005,16 @@ function toggleChatCompletionForms() {
         const matchesSource = validSources.includes(oai_settings.chat_completion_source);
         $(this).toggle(mode !== 'except' ? matchesSource : !matchesSource);
     });
+
+    // Show/hide developer role options based on source (OpenAI-compatible sources support developer role)
+    const developerRoleSources = [
+        chat_completion_sources.OPENAI,
+        chat_completion_sources.AZURE_OPENAI,
+        chat_completion_sources.OPENROUTER,
+        chat_completion_sources.CUSTOM,
+    ];
+    const showDeveloperRole = developerRoleSources.includes(oai_settings.chat_completion_source);
+    $('.developer_role_option').toggle(showDeveloperRole);
 }
 
 async function testApiConnection() {

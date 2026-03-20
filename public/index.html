@@ -2165,8 +2165,8 @@
                                             <div class="toggle-description justifyLeft marginBot5" data-source="openai,custom,xai,aimlapi,openrouter,pollinations,perplexity,cometapi,electronhub,azure_openai,chutes" data-i18n="OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.">
                                                 OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.
                                             </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 95%). Auto does not request thinking.">
-                                                Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 95%). Auto does not request thinking.
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 90%). Auto does not request thinking.">
+                                                Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 90%). Auto does not request thinking.
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai">
                                                 <span data-i18n="Sets a dynamic reasoning depth level for thinking (Flash 3/Pro 3). High and low are supported by both, minimal and medium are Flash 3 only. Auto lets the model decide.">
@@ -4087,6 +4087,7 @@
                                             </label>
                                             <select id="context_story_string_role" class="text_pole">
                                                 <option data-i18n="System" value="0">System</option>
+                                                <option data-i18n="Developer" value="3" class="developer_role_option" style="display:none;">Developer</option>
                                                 <option data-i18n="User" value="1">User</option>
                                                 <option data-i18n="Assistant" value="2">Assistant</option>
                                             </select>
@@ -5815,6 +5816,7 @@
                                             <label for="persona_depth_role" data-i18n="Role:">Role:</label>
                                             <select id="persona_depth_role" class="text_pole">
                                                 <option data-i18n="System" value="0">System</option>
+                                                <option data-i18n="Developer" value="3" class="developer_role_option" style="display:none;">Developer</option>
                                                 <option data-i18n="User" value="1">User</option>
                                                 <option data-i18n="Assistant" value="2">Assistant</option>
                                             </select>
@@ -7039,6 +7041,9 @@
                                                 <option value="4" data-role="0" data-i18n="at Depth System">
                                                     @D ⚙️
                                                 </option>
+                                                <option value="4" data-role="3" data-i18n="at Depth Developer" class="developer_role_option" style="display:none;">
+                                                    @D 🛠️
+                                                </option>
                                                 <option value="4" data-role="1" data-i18n="at Depth User">
                                                     @D 👤
                                                 </option>
@@ -7156,6 +7161,7 @@
                                 </label>
                                 <select id="completion_prompt_manager_popup_entry_form_role" class="text_pole" name="role">
                                     <option data-i18n="System" value="system">System</option>
+                                    <option data-i18n="Developer" value="developer" class="developer_role_option" style="display:none;">Developer</option>
                                     <option data-i18n="User" value="user">User</option>
                                     <option data-i18n="AI Assistant" value="assistant">AI Assistant</option>
                                 </select>
@@ -7624,6 +7630,7 @@
                                 <span data-i18n="as">as</span>
                                 <select id="extension_floating_role" class="text_pole widthNatural">
                                     <option data-i18n="System" value="0">System</option>
+                                    <option data-i18n="Developer" value="3" class="developer_role_option" style="display:none;">Developer</option>
                                     <option data-i18n="User" value="1">User</option>
                                     <option data-i18n="Assistant" value="2">Assistant</option>
                                 </select>
@@ -7709,6 +7716,7 @@
                                 <span data-i18n="as">as</span>
                                 <select id="extension_default_role" class="text_pole widthNatural">
                                     <option data-i18n="System" value="0">System</option>
+                                    <option data-i18n="Developer" value="3" class="developer_role_option" style="display:none;">Developer</option>
                                     <option data-i18n="User" value="1">User</option>
                                     <option data-i18n="Assistant" value="2">Assistant</option>
                                 </select>

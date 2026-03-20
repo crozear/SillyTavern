@@ -58,6 +58,7 @@ export const enumIcons = {
 
     // Roles
     system: '⚙️',
+    developer: '🛠️',
     user: '👤',
     assistant: '🤖',
 
@@ -99,6 +100,7 @@ export const enumIcons = {
     getRoleIcon: (role) => {
         switch (role) {
             case extension_prompt_roles.SYSTEM: return enumIcons.system;
+            case extension_prompt_roles.DEVELOPER: return enumIcons.developer;
             case extension_prompt_roles.USER: return enumIcons.user;
             case extension_prompt_roles.ASSISTANT: return enumIcons.assistant;
             default: return enumIcons.default;

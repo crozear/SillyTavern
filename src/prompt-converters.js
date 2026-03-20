@@ -307,10 +307,12 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
             });
         }
 
-        // Remove offending properties
-        delete message.name;
-        delete message.tool_calls;
-        delete message.tool_call_id;
+        // Remove all non-standard properties (extensions may add arbitrary fields like 'source')
+        for (const key of Object.keys(message)) {
+            if (key !== 'role' && key !== 'content') {
+                delete message[key];
+            }
+        }
     });
 
     // Images in assistant messages should be moved to the next user message

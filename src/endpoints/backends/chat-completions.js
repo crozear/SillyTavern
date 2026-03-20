@@ -93,7 +93,7 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 /**
  * Module-scoped Claude caching configuration values.
  */
-const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '5m' : '5m';
+const cacheTTL = getConfigValue('claude.extendedTTL', false, 'boolean') ? '1h' : '5m';
 const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
 const cachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
@@ -1267,18 +1267,12 @@ async function sendClaudeRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE);
     const divider = '-'.repeat(process.stdout.columns);
-    const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
+    const enableSystemPromptCache = Boolean(request.body.claude_enable_caching);
     const wordReplacementsEnabled = getWordReplacementEnabled(request);
     let cachingAtDepth = getConfigValue('claude.cachingAtDepth', -1, 'number');
     // Disabled if not an integer or negative
     if (!Number.isInteger(cachingAtDepth) || cachingAtDepth < 0) {
         cachingAtDepth = -1;
-    }
-    // UI toggle: override cachingAtDepth from request body
-    if (request.body.claude_enable_caching_at_depth === false) {
-        cachingAtDepth = -1;
-    } else if (request.body.claude_enable_caching_at_depth === true && cachingAtDepth < 0) {
-        cachingAtDepth = 0;
     }
 
     if (!apiKey) {
@@ -1371,10 +1365,10 @@ async function sendClaudeRequest(request, response) {
         }
 
         if (isLimitedSampling) {
-            if (requestBody.top_p < 1) {
-                delete requestBody.temperature;
-            } else {
+            if (requestBody.temperature < 1) {
                 delete requestBody.top_p;
+            } else {
+                delete requestBody.temperature;
             }
         }
 

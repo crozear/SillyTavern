@@ -3167,15 +3167,19 @@ function convertToResponsesApiRequest(requestBody) {
         let firstSystemUsed = false;
         const input = [];
         for (const msg of requestBody.messages) {
-            if (msg.role === 'developer' && !firstSystemUsed) {
-                requestBody.instructions = typeof msg.content === 'string'
-                    ? msg.content
-                    : msg.content.map(p => p.text ?? '').join('');
+            // Only keep valid Responses API fields (role, content, name) — strip extension metadata
+            const cleanMsg = { role: msg.role, content: msg.content };
+            if (msg.name) cleanMsg.name = msg.name;
+
+            if (cleanMsg.role === 'developer' && !firstSystemUsed) {
+                requestBody.instructions = typeof cleanMsg.content === 'string'
+                    ? cleanMsg.content
+                    : cleanMsg.content.map(p => p.text ?? '').join('');
                 firstSystemUsed = true;
-            } else if (msg.role === 'developer') {
-                input.push({ ...msg, role: 'system' });
+            } else if (cleanMsg.role === 'developer') {
+                input.push({ ...cleanMsg, role: 'system' });
             } else {
-                input.push(msg);
+                input.push(cleanMsg);
             }
         }
         requestBody.input = input;
@@ -3605,6 +3609,17 @@ router.post('/generate', async function (request, response) {
             : (request.body.reverse_proxy && request.body.prompt && typeof request.body.prompt === 'object' && !Array.isArray(request.body.prompt)
                 ? request.body.prompt
                 : undefined);
+
+        // Strip non-standard fields from messages (extensions may add metadata like 'source', 'swipe_info', etc.)
+        if (Array.isArray(request.body.messages)) {
+            request.body.messages = request.body.messages.map(msg => {
+                const clean = { role: msg.role, content: msg.content };
+                if (msg.name) clean.name = msg.name;
+                if (msg.tool_calls) clean.tool_calls = msg.tool_calls;
+                if (msg.tool_call_id) clean.tool_call_id = msg.tool_call_id;
+                return clean;
+            });
+        }
 
         const requestBody = {
             'messages': isTextCompletion === false ? request.body.messages : undefined,

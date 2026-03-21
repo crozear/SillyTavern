@@ -3162,7 +3162,7 @@ router.post('/bias', async function (request, response) {
  * @param {object} requestBody The request body to transform
  */
 function convertToResponsesApiRequest(requestBody) {
-    // messages → input; first system message → instructions param, rest → developer role
+    // messages → input; first developer message → instructions param, rest → system role
     if (requestBody.messages) {
         let firstSystemUsed = false;
         const input = [];
@@ -3172,8 +3172,10 @@ function convertToResponsesApiRequest(requestBody) {
                     ? msg.content
                     : msg.content.map(p => p.text ?? '').join('');
                 firstSystemUsed = true;
+            } else if (msg.role === 'developer') {
+                input.push({ ...msg, role: 'system' });
             } else {
-                input.push({ role: msg.role, content: msg.content, ...(msg.name ? { name: msg.name } : {}) });
+                input.push(msg);
             }
         }
         requestBody.input = input;

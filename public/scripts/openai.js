@@ -3834,12 +3834,12 @@ export class ChatCompletion {
 
         for (let message of this.messages.collection) {
             // Force exclude empty messages
-            if (message.role === 'system' || message.role === 'developer' && !message.content) {
+            if ((message.role === 'system' || message.role === 'developer') && !message.content) {
                 continue;
             }
 
             const shouldSquash = (message) => {
-                return !excludeList.includes(message.identifier) && message.role === 'system' || message.role === 'developer' && !message.name;
+                return !excludeList.includes(message.identifier) && (message.role === 'system' || message.role === 'developer') && !message.name;
             };
 
             if (shouldSquash(message)) {

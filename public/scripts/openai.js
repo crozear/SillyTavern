@@ -4297,6 +4297,7 @@ function loadOpenAISettings(data, settings) {
     // Don't display Service Account JSON in textarea - it's stored in backend secrets
     $('#vertexai_service_account_json').val('');
     updateVertexAIServiceAccountStatus();
+    updateClaudeResolutionHint();
 
     $('#openai_logit_bias_preset').empty();
     for (const preset of Object.keys(oai_settings.bias_presets)) {
@@ -6578,6 +6579,21 @@ function updateVertexAIServiceAccountStatus(isValid = false, message = '') {
     }
 }
 
+/**
+ * Update the Claude image resolution hint label with a worst-case token estimate.
+ */
+function updateClaudeResolutionHint() {
+    // @ts-ignore
+    const resolutionPresets = { min: 322, low: 644, medium: 1288, high: 2576 };
+    const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
+    const presetKey = (preset || 'medium');
+    // @ts-ignore
+    const maxEdge = resolutionPresets[presetKey] ?? resolutionPresets.medium;
+    const paddedEdge = Math.ceil(maxEdge / 28) * 28;
+    const tokens = Math.round(paddedEdge * paddedEdge / 750);
+    $('#claude_image_resolution_hint').text(`Max ~${tokens.toLocaleString()} tokens (${maxEdge.toLocaleString()} px long edge)`);
+}
+
 function updateFeatureSupportFlags() {
     const featureFlags = {
         openai_function_calling_supported: ToolManager.isToolCallingSupported(),
@@ -6909,6 +6925,12 @@ export function initOpenAI() {
     $('#openai_media_inlining').on('input', function () {
         oai_settings.media_inlining = !!$(this).prop('checked');
         updateFeatureSupportFlags();
+        saveSettingsDebounced();
+    });
+
+    $('#claude_image_resolution').on('input', function () {
+        oai_settings.claude_image_resolution = String($(this).val());
+        updateClaudeResolutionHint();
         saveSettingsDebounced();
     });
 

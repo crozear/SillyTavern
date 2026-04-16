@@ -3033,6 +3033,9 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         if (show_thoughts) {
             state.reasoning += data?.delta?.thinking || '';
         }
+        if (data?.type === 'message_delta' && data?.usage?.output_tokens != null) {
+            state.outputTokens = data.usage.output_tokens;
+        }
         return data?.delta?.text || '';
     } else if ([chat_completion_sources.MAKERSUITE, chat_completion_sources.VERTEXAI].includes(chat_completion_source)) {
         const inlineData = data?.candidates?.[0]?.content?.parts?.filter(x => x.inlineData && !x.thought)?.map(x => x.inlineData) || [];

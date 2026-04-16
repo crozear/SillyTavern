@@ -3640,6 +3640,17 @@ class Message {
         if (compressImageSources.includes(oai_settings.chat_completion_source) && dataSize > sizeThreshold) {
             const maxSide = 2048;
             image = await createThumbnail(image, maxSide, maxSide);
+        } else if (oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+            const resolutionPresets = { min: 322, low: 644, medium: 1288, high: 2576 };
+            const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
+            // @ts-ignore
+            const maxEdge = resolutionPresets[preset] ?? resolutionPresets.medium;
+            const size = await getImageSizeFromDataURL(image);
+            const needsResize = size.width > maxEdge || size.height > maxEdge;
+            const needsMimeConvert = !safeMimeTypes.includes(mimeType);
+            if (needsResize || needsMimeConvert) {
+                image = await createThumbnail(image, needsResize ? maxEdge : null, needsResize ? maxEdge : null);
+            }
         } else if (!safeMimeTypes.includes(mimeType)) {
             image = await createThumbnail(image, null, null);
         }

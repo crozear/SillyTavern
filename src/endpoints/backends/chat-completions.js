@@ -1295,11 +1295,11 @@ async function sendClaudeRequest(request, response) {
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
-        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model);
+        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
+        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && Boolean(request.body.enable_web_search);
+        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
+        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
         const stopSequences = [];
@@ -1339,7 +1339,9 @@ async function sendClaudeRequest(request, response) {
                 requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: getCacheTTL(request) };
             }
         }
-
+        if (requestBody.top_k == 0) {
+                delete requestBody.top_k;
+        }
         // Structured output is a forced tool
         if (request.body.json_schema) {
             const jsonTool = {

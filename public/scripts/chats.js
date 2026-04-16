@@ -512,17 +512,23 @@ export async function appendFileContent(message, messageText) {
     if (message.extra.fileLength >= 0) {
         delete message.extra.fileLength;
     }
+    delete message.extra.fileSystemMessage;
     if (Array.isArray(message.extra?.files) && message.extra.files.length > 0) {
         const fileTexts = [];
+        const labeledEntries = [];
         for (const file of message.extra.files) {
             const fileText = file.text || (await getFileAttachment(file.url));
             if (fileText) {
                 fileTexts.push(fileText);
+                labeledEntries.push(`[${file.name}]: "${fileText}"`);
             }
         }
-        const mergedFileTexts = fileTexts.join('\n\n') + '\n\n';
-        message.extra.fileLength = mergedFileTexts.length;
-        return mergedFileTexts + messageText;
+        if (fileTexts.length > 0) {
+            const mergedFileTexts = fileTexts.join('\n\n') + '\n\n';
+            message.extra.fileLength = mergedFileTexts.length;
+            message.extra.fileSystemMessage = 'User has attached one or more files:\n' + labeledEntries.join('\n');
+            return mergedFileTexts + messageText;
+        }
     }
     return messageText;
 }

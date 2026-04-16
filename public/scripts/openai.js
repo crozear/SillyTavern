@@ -549,27 +549,41 @@ async function validateReverseProxy() {
  * @returns {object[]} - Array containing all messages formatted for chat completion.
  */
 function setOpenAIMessages(chat) {
-    let j = 0;
     // clean openai msgs
-    const messages = [];
     // Get current API and model for thought signature validation
     const currentApi = oai_settings.chat_completion_source;
     const currentModel = getChatCompletionModel();
 
-    for (let i = chat.length - 1; i >= 0; i--) {
+    // Build in chronological order (oldest first) to allow file system message injection,
+    // then reverse at end to match expected newest-first consumer order.
+    const chronological = [];
+
+    for (let j = 0; j < chat.length; j++) {
         let role = chat[j].is_user ? 'user' : 'assistant';
         let content = chat[j].mes;
 
         // If this symbol flag is set, completely ignore the message.
         // This can be used to hide messages without affecting the number of messages in the chat.
         if (chat[j].extra?.[IGNORE_SYMBOL]) {
-            j++;
             continue;
         }
 
         // 100% legal way to send a message as system
         if (chat[j].extra?.type === system_message_types.NARRATOR) {
             role = 'system';
+        }
+
+        // For user messages with file attachments, check before applying names behavior.
+        // fileLength is measured on the raw message text, so we must strip the file prefix
+        // before any name prefixing occurs. If content.length < fileLength, the vectors
+        // extension already processed and removed the file content, so no injection needed.
+        const fileSystemMessage = role === 'user' ? (chat[j].extra?.fileSystemMessage ?? null) : null;
+        const fileLength = chat[j].extra?.fileLength ?? 0;
+        const hasFileInMessage = fileSystemMessage !== null && fileLength > 0 && content.length >= fileLength;
+
+        if (hasFileInMessage) {
+            // Strip raw file content from user message — it will be conveyed via the system message instead.
+            content = content.substring(fileLength);
         }
 
         // for groups or sendas command - prepend a character's name
@@ -618,11 +632,16 @@ function setOpenAIMessages(chat) {
             });
         }
 
-        messages[i] = { 'role': role, 'content': content, name: name, 'media': media, 'mediaDisplay': mediaDisplay, 'mediaIndex': mediaIndex, 'invocations': invocations, 'signature': signature };
-        j++;
+        // Inject labeled file context as a system message immediately before the user message.
+        if (hasFileInMessage) {
+            chronological.push({ 'role': 'system', 'content': fileSystemMessage, name: '', 'media': undefined, 'mediaDisplay': undefined, 'mediaIndex': undefined, 'invocations': undefined, 'signature': undefined });
+        }
+
+        chronological.push({ 'role': role, 'content': content, name: name, 'media': media, 'mediaDisplay': mediaDisplay, 'mediaIndex': mediaIndex, 'invocations': invocations, 'signature': signature });
     }
 
-    return messages;
+    // Reverse to newest-first order to match the expected consumer behavior.
+    return chronological.reverse();
 }
 
 /**

@@ -3485,6 +3485,8 @@ class StreamingProcessor {
         this.images = [];
         /** @type {string?} */
         this.reasoningSignature = null;
+        /** @type {number?} */
+        this.outputTokens = null;
     }
 
     /**
@@ -3595,8 +3597,17 @@ class StreamingProcessor {
             processedText = chat[messageId].mes;
 
             // Token count update.
-            const tokenCountText = this.reasoningHandler.reasoning + processedText;
-            const currentTokenCount = isFinal && power_user.message_token_count_enabled ? await getTokenCountAsync(tokenCountText, 0) : 0;
+            // For Claude, use output_tokens from the API (covers actual thinking tokens, not just the summary).
+            // For other providers, fall back to local tokenization of reasoning + text.
+            let currentTokenCount = 0;
+            if (isFinal && power_user.message_token_count_enabled) {
+                if (this.outputTokens != null) {
+                    currentTokenCount = this.outputTokens;
+                } else {
+                    const tokenCountText = this.reasoningHandler.reasoning + processedText;
+                    currentTokenCount = await getTokenCountAsync(tokenCountText, 0);
+                }
+            }
             if (currentTokenCount) {
                 chat[messageId].extra.token_count = currentTokenCount;
                 if (this.messageTokenCounterDom instanceof HTMLElement) {
@@ -3779,6 +3790,7 @@ class StreamingProcessor {
                 this.reasoningHandler.updateReasoning(this.messageId, state?.reasoning);
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
+                this.outputTokens = state?.outputTokens ?? this.outputTokens;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await sw.tick(async () => await this.onProgressStreaming(this.messageId, this.continueMessage + text));
             }

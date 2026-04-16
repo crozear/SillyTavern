@@ -2073,6 +2073,20 @@
                                                 </select>
                                             </div>
                                         </div>
+                                        <div class="flex-container flexFlowColumn wide100p textAlignCenter marginTop10" data-source="claude">
+                                            <div class="flex-container oneline-dropdown">
+                                                <label for="claude_image_resolution" data-i18n="Claude Image Resolution">
+                                                    Claude Image Resolution
+                                                </label>
+                                                <select id="claude_image_resolution">
+                                                    <option value="min">Min (322 px)</option>
+                                                    <option value="low">Low (644 px)</option>
+                                                    <option value="medium">Medium (1,288 px)</option>
+                                                    <option value="high">High (2,576 px)</option>
+                                                </select>
+                                            </div>
+                                            <small id="claude_image_resolution_hint" class="opacity50p marginTop5"></small>
+                                        </div>
                                     </div>
                                     <div id="request_images_block" class="range-block" data-source="makersuite,vertexai">
                                         <label for="openai_request_images" class="checkbox_label widthFreeExpand">

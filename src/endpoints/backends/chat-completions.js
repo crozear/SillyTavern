@@ -1291,14 +1291,14 @@ async function sendClaudeRequest(request, response) {
             controller.abort();
         });
         const additionalHeaders = {};
-        const betaHeaders = ['output-128k-2025-02-19', 'context-1m-2025-08-07'];
+        const betaHeaders = ['output-300k-2026-03-24'];
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
         const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
-        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false || /^claude-opus-4-7/.test(request.body.model);
         const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
+        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
         const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
@@ -1339,8 +1339,10 @@ async function sendClaudeRequest(request, response) {
                 requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: getCacheTTL(request) };
             }
         }
-        if (requestBody.top_k == 0) {
+        if (/^claude-opus-4-7/.test(request.body.model)) {
                 delete requestBody.top_k;
+                delete requestBody.temperature;
+                delete requestBody.top_p;
         }
         // Structured output is a forced tool
         if (request.body.json_schema) {
@@ -1381,7 +1383,7 @@ async function sendClaudeRequest(request, response) {
         const reasoningEffort = request.body.reasoning_effort;
         const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
 
-        if (useThinking && !isThinkingDisabled) {
+        if (useThinking && !isThinkingDisabled || /^claude-opus-4-7/.test(request.body.model)) {
             // No prefill when thinking
             fixThinkingPrefill = true;
             const minThinkTokens = 1024;
@@ -1392,8 +1394,8 @@ async function sendClaudeRequest(request, response) {
                 requestBody.max_tokens = newValue;
             }
 
-            if (isAdaptiveThinking) {
-                // Opus 4.6 / Sonnet 4.6: use adaptive thinking
+            if (isAdaptiveThinking || /^claude-opus-4-7/.test(request.body.model)) {
+                // Opus 4.6-4.7 / Sonnet 4.6: use adaptive thinking
                 requestBody.thinking = { type: 'adaptive' };
 
                 const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);

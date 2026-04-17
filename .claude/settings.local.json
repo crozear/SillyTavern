@@ -8,7 +8,11 @@
       "Bash(npm run test:unit:*)",
       "Bash(node:*)",
       "mcp__plugin_context7_context7__resolve-library-id",
-      "mcp__plugin_context7_context7__query-docs"
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(xargs grep *)",
+      "Bash(grep -n \"^function\\\\|^}\\\\s*$\" /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)",
+      "Bash(awk '/^function.*\\\\{/ {start=NR; fname=$0} NR==6915 {print \"Line 6915 is in function at line \" start \": \" fname; exit}' /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)",
+      "Bash(awk '/^export function initOpenAI/ {start=NR} NR==6915 && start {print \"Line 6915 is inside initOpenAI starting at line \" start} NR > start+500 && !found {found=1; end=NR}' /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)"
     ]
   },
   "outputStyle": "Explanatory"

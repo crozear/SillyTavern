@@ -9,6 +9,7 @@ import {
     abortStatusCheck,
     cancelStatusCheck,
     characters,
+    chat,
     chat_metadata,
     event_types,
     eventSource,
@@ -385,7 +386,7 @@ export const settingsToUpdate = {
     extensions: ['#NULL_SELECTOR', 'extensions', false, false],
 };
 
-const default_settings = {
+export const default_settings = {
     preset_settings_openai: 'Default',
     temp_openai: 1.0,
     freq_pen_openai: 0,
@@ -413,7 +414,7 @@ const default_settings = {
     scenario_format: default_scenario_format,
     personality_format: default_personality_format,
     openai_model: 'gpt-5.1',
-    claude_model: 'claude-sonnet-4-6',
+    claude_model: 'claude-opus-4-7',
     google_model: 'gemini-2.5-pro',
     vertexai_model: 'gemini-2.5-pro',
     ai21_model: 'jamba-large',
@@ -2735,6 +2736,9 @@ export async function createGenerationParameters(settings, model, type, messages
     }
 
     if (settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+        if (/^claude-opus-4-7/.test(model)) {
+            oai_settings.show_thoughts = false;
+        }
         generate_data.top_k = Number(settings.top_k_openai);
         generate_data.use_sysprompt = settings.use_sysprompt;
         generate_data.claude_enable_caching = settings.claude_enable_caching;
@@ -3421,6 +3425,8 @@ class InvalidCharacterNameError extends Error {
  */
 class Message {
     static tokensPerImage = 85;
+    /** @type {number} */
+    static tokensClaude;
 
     /** @type {number} */
     tokens;
@@ -3540,12 +3546,13 @@ class Message {
 
         image = await this.compressImage(image);
 
-        const quality = oai_settings.inline_image_quality || default_settings.inline_image_quality;
+        const quality = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
         this.content.push({ type: 'image_url', image_url: { 'url': image, 'detail': quality } });
 
         try {
-            const tokens = await this.getImageTokenCost(image, quality);
-            this.tokens += tokens;
+            const tokensClaude = await this.getImageTokenCost(image, quality);
+            Message.tokensClaude = tokensClaude * (/^claude-opus-4-(5|6|7)/.test(oai_settings.claude_model) ? 0.000005 : /^claude-opus-4-(1|2)/.test(oai_settings.claude_model) ? 0.000015 : /^claude-sonnet/.test(oai_settings.claude_model) ? 0.000003 : 0.000001);
+            updateClaudeResolutionHint();
         } catch (error) {
             this.tokens += Message.tokensPerImage;
             console.error('Failed to get image token cost', error);
@@ -3571,9 +3578,12 @@ class Message {
                 return;
             }
         }
-
+        let quality = oai_settings.inline_image_quality || default_settings.inline_image_quality;
         // Note: No compression for videos (unlike images)
-        const quality = oai_settings.inline_image_quality || default_settings.inline_image_quality;
+        if (chat_completion_sources.CLAUDE === oai_settings.chat_completion_source) {
+            quality = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
+        }
+
         this.content.push({ type: 'video_url', video_url: { 'url': video, 'detail': quality } });
 
         try {
@@ -3641,7 +3651,7 @@ class Message {
             const maxSide = 2048;
             image = await createThumbnail(image, maxSide, maxSide);
         } else if (oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
-            const resolutionPresets = { min: 322, low: 644, medium: 1288, high: 2576 };
+            const resolutionPresets = { min: 256, low: 512, medium: 1024, high: 1568, opus: 2576 };
             const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
             // @ts-ignore
             const maxEdge = resolutionPresets[preset] ?? resolutionPresets.medium;
@@ -3664,14 +3674,21 @@ class Message {
      * @returns {Promise<number>} The token cost of the image.
      */
     async getImageTokenCost(dataUrl, quality) {
-        if (quality === 'low') {
-            return Message.tokensPerImage;
+        const resolutionPresets = { min: 256, low: 512, medium: 1024, high: 1568, opus: 2576 };
+        const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
+        // @ts-ignore
+        const maxEdge = resolutionPresets[preset] ?? resolutionPresets.medium;
+        const size = await getImageSizeFromDataURL(dataUrl);
+        if (size.width > maxEdge || size.height > maxEdge && oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+            dataUrl = await createThumbnail(dataUrl, maxEdge, maxEdge);
+            const scale = await getImageSizeFromDataURL(dataUrl);
+            Message.tokensClaude = Math.round(scale.width * scale.height / 750);
+        } else {
+            Message.tokensClaude = Math.round(size.width * size.height / 750);
         }
 
-        const size = await getImageSizeFromDataURL(dataUrl);
-
         // If the image is small enough, we can use the low quality token cost
-        if (quality === 'auto' && size.width <= 512 && size.height <= 512) {
+        if (quality === 'auto' && size.width <= 512 && size.height <= 512 && oai_settings.chat_completion_source !== chat_completion_sources.CLAUDE) {
             return Message.tokensPerImage;
         }
 
@@ -3692,8 +3709,13 @@ class Message {
         const finalHeight = Math.round(scaledHeight * finalScale);
 
         const squares = Math.ceil(finalWidth / 512) * Math.ceil(finalHeight / 512);
-        const tokens = squares * 170 + 85;
-        return tokens;
+
+        if (oai_settings.chat_completion_source === chat_completion_sources.OPENAI) {
+            const tokens = squares * 170 + 85;
+            Message.tokensPerImage = tokens;
+            return Message.tokensPerImage;
+        }
+        return Message.tokensClaude;
     }
 
     /**
@@ -5320,7 +5342,7 @@ function getNanoGptMaxContext(model, isUnlocked) {
 async function onModelChange() {
     biasCache = undefined;
     let value = String($(this).val() || '');
-
+    updateClaudeResolutionHint();
     // Skip setting the context size for sources that get it from external APIs
     const hasModelsLoaded = Array.isArray(model_list) && model_list.length > 0;
 
@@ -6592,17 +6614,36 @@ function updateVertexAIServiceAccountStatus(isValid = false, message = '') {
 
 /**
  * Update the Claude image resolution hint label with a worst-case token estimate.
+ * @param {number} tokenPrice - The price in tokens for the attached image.
  */
-function updateClaudeResolutionHint() {
+export function updateClaudeResolutionHint() {
+    const isOpus47 = /^claude-opus-4-7/.test(oai_settings.claude_model);
+    const $opusOption = $('#claude_image_resolution option[value="opus"]');
+    $opusOption.prop('hidden', !isOpus47);
+    if (!isOpus47 && oai_settings.claude_image_resolution === 'opus') {
+        oai_settings.claude_image_resolution = 'medium';
+        $('#claude_image_resolution').val('medium');
+    }
+
     // @ts-ignore
-    const resolutionPresets = { min: 322, low: 644, medium: 1288, high: 2576 };
+    const resolutionPresets = { min: 256, low: 512, medium: 1024, high: 1568};
+    if (isOpus47) {
+        Object.assign(resolutionPresets, {opus: 2576});
+    }
     const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
     const presetKey = (preset || 'medium');
     // @ts-ignore
     const maxEdge = resolutionPresets[presetKey] ?? resolutionPresets.medium;
     const paddedEdge = Math.ceil(maxEdge / 28) * 28;
     const tokens = Math.round(paddedEdge * paddedEdge / 750);
+    const model = oai_settings.claude_model || '';
+    const pricePerToken = /^claude-opus-4-(5|6|7)/.test(model) ? 0.000005
+        : /^claude-opus-4-(1|2)/.test(model) ? 0.000015
+        : /^claude-sonnet/.test(model) ? 0.000003
+        : 0.000001;
+    const cost = tokens * pricePerToken;
     $('#claude_image_resolution_hint').text(`Max ~${tokens.toLocaleString()} tokens (${maxEdge.toLocaleString()} px long edge)`);
+    $('#claude_image_resolution_cost').text(`Cost: $${cost.toFixed(4)}`);
 }
 
 function updateFeatureSupportFlags() {

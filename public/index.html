@@ -2079,13 +2079,15 @@
                                                     Claude Image Resolution
                                                 </label>
                                                 <select id="claude_image_resolution">
-                                                    <option value="min">Min (322 px)</option>
-                                                    <option value="low">Low (644 px)</option>
-                                                    <option value="medium">Medium (1,288 px)</option>
-                                                    <option value="high">High (2,576 px)</option>
+                                                    <option value="min">Min (256 px)</option>
+                                                    <option value="low">Low (512 px)</option>
+                                                    <option value="medium">Medium (1,024 px)</option>
+                                                    <option value="high">High (1,568 px)</option>
+                                                    <option value="opus" hidden>Opus 4.7 Max (2,576 px)</option>
                                                 </select>
                                             </div>
                                             <small id="claude_image_resolution_hint" class="opacity50p marginTop5"></small>
+                                            <small id="claude_image_resolution_cost" class="opacity50p marginTop5"></small>
                                         </div>
                                     </div>
                                     <div id="request_images_block" class="range-block" data-source="makersuite,vertexai">
@@ -2174,6 +2176,7 @@
                                                 <option data-i18n="openai_reasoning_effort_low" value="low">Low</option>
                                                 <option data-i18n="openai_reasoning_effort_medium" value="medium">Medium</option>
                                                 <option data-i18n="openai_reasoning_effort_high" value="high">High</option>
+                                                <option data-i18n="openai_reasoning_effort_xhigh" value="xhigh">Extra High</option>
                                                 <option data-i18n="openai_reasoning_effort_max" value="max">Max</option>
                                             </select>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="openai,custom,xai,aimlapi,openrouter,pollinations,perplexity,cometapi,electronhub,azure_openai,chutes" data-i18n="OpenAI-style options: low, medium, high. Minimum and maximum are aliased to low and high. Auto does not send an effort level.">

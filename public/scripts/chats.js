@@ -47,6 +47,8 @@ import {
     convertTextToBase64,
     isSameFile,
     clamp,
+    getImageSizeFromDataURL,
+    createThumbnail,
 } from './utils.js';
 import { extension_settings, renderExtensionTemplateAsync, saveMetadataDebounced } from './extensions.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
@@ -57,6 +59,7 @@ import { t } from './i18n.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, SCROLL_BEHAVIOR, SWIPE_DIRECTION } from './constants.js';
+import { chat_completion_sources, default_settings, oai_settings, updateClaudeResolutionHint } from './openai.js';
 
 /**
  * @typedef {Object} FileAttachment
@@ -225,6 +228,25 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
                 message.extra.media.push(mediaAttachment);
                 message.extra.media_index = message.extra.media.length - 1;
                 message.extra.inline_image = true;
+
+                if (mediaType === MEDIA_TYPE.IMAGE && oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+                    try {
+                        const resolutionPresets = { min: 256, low: 512, medium: 1024, high: 1568, opus: 2576 };
+                        const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
+                        // @ts-ignore
+                        const maxEdge = resolutionPresets[preset] ?? resolutionPresets.medium;
+                        let size = await getImageSizeFromDataURL(fileBase64);
+                        if (size.width > maxEdge || size.height > maxEdge) {
+                            const scaled = await createThumbnail(fileBase64, maxEdge, maxEdge);
+                            size = await getImageSizeFromDataURL(scaled);
+                        }
+                        const tokens = Math.round(size.width * size.height / 750);
+                        const tokenPrice = tokens * (/^claude-opus-4-(5|6|7)/.test(oai_settings.claude_model) ? 0.000005 : /^claude-opus-4-(1|2)/.test(oai_settings.claude_model) ? 0.000015 : /^claude-sonnet/.test(oai_settings.claude_model) ? 0.000003 : 0.000001);
+                        updateClaudeResolutionHint(tokenPrice);
+                    } catch (error) {
+                        console.error('Failed to calculate Claude image token cost', error);
+                    }
+                }
             } else {
                 const uniqueFileName = `${fileNamePrefix}.txt`;
 

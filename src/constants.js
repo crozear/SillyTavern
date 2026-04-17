@@ -465,19 +465,13 @@ export const OPENAI_REASONING_EFFORT_MODELS = [
     'gpt-5-mini',
     'gpt-5.1',
     'gpt-5.2',
-    'gpt-5.4',
-    'gpt-5.4-mini',
+    'gpt-5.2-2025-12-11',
+    'gpt-5.2-chat-latest',
 ];
 
 export const OPENAI_REASONING_EFFORT_MAP = {
     min: 'minimal',
 };
-
-/**
- * Models that should use the OpenAI Responses API (/v1/responses) instead of Chat Completions.
- * These are reasoning models that benefit from the richer output format.
- */
-export const OPENAI_RESPONSES_API_MODELS = OPENAI_REASONING_EFFORT_MODELS;
 
 export const NANOGPT_REASONING_EFFORT_MAP = {
     min: 'none',
@@ -537,4 +531,9 @@ export const MEDIA_REQUEST_TYPE = {
 export const ZAI_ENDPOINT = {
     COMMON: 'common',
     CODING: 'coding',
+};
+
+export const SILICONFLOW_ENDPOINT = {
+    GLOBAL: 'global',
+    CN: 'cn',
 };

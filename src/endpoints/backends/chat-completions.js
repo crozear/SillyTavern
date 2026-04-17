@@ -1388,7 +1388,7 @@ async function sendClaudeRequest(request, response) {
         const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
         const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
 
-        if (useThinking && !isThinkingDisabled || /^claude-opus-4-7/.test(request.body.model)) {
+        if (useThinking && !isThinkingDisabled) {
             // No prefill when thinking
             fixThinkingPrefill = true;
             const minThinkTokens = 1024;

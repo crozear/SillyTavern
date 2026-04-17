@@ -9,7 +9,6 @@ import {
     abortStatusCheck,
     cancelStatusCheck,
     characters,
-    chat,
     chat_metadata,
     event_types,
     eventSource,
@@ -2815,7 +2814,7 @@ export async function createGenerationParameters(settings, model, type, messages
     }
 
     if (settings.chat_completion_source === chat_completion_sources.CLAUDE) {
-        if (/^claude-opus-4-7/.test(model)) {
+        if (/^claude-opus-4-7/.test(model) && settings.reasoning_effort !== reasoning_effort_types.none) {
             oai_settings.show_thoughts = false;
         }
         generate_data.top_k = Number(settings.top_k_openai);

@@ -3491,24 +3491,29 @@ router.post('/generate', async function (request, response) {
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {
             apiUrl = API_POLLINATIONS;
-            apiKey = 'NONE';
-            headers = {
-                'Authorization': '',
-            };
+            apiKey = readSecret(request.user.directories, SECRET_KEYS.POLLINATIONS);
+            headers = {};
             bodyParams = {
                 reasoning_effort: request.body.reasoning_effort,
-                private: true,
-                referrer: 'sillytavern',
                 seed: request.body.seed ?? Math.floor(Math.random() * 99999999),
             };
             if (request.body.json_schema) {
-                setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
+                bodyParams['response_format'] = {
+                    type: 'json_schema',
+                    json_schema: {
+                        schema: request.body.json_schema.value,
+                    },
+                };
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MOONSHOT) {
-            apiUrl = API_MOONSHOT;
-            apiKey = readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
+            apiUrl = new URL(request.body.reverse_proxy || API_MOONSHOT).toString();
+            apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MOONSHOT);
             headers = {};
-            bodyParams = {};
+            bodyParams = {
+                thinking: {
+                    type: request.body.include_reasoning ? 'enabled' : 'disabled',
+                },
+            };
             request.body.json_schema
                 ? setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema)
                 : addAssistantPrefix(request.body.messages, [], 'partial');

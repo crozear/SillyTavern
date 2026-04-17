@@ -1385,7 +1385,6 @@ async function sendClaudeRequest(request, response) {
         }
 
         const reasoningEffort = request.body.reasoning_effort;
-        const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
         const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
 
         if (useThinking && !isThinkingDisabled) {
@@ -1431,6 +1430,7 @@ async function sendClaudeRequest(request, response) {
         if ((fixThinkingPrefill || noPrefillModel) && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {
             convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
         }
+
 
         if (betaHeaders.length) {
             additionalHeaders['anthropic-beta'] = betaHeaders.join(',');

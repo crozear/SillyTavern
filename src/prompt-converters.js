@@ -21,6 +21,7 @@ const REASONING_EFFORT = {
     low: 'low',
     medium: 'medium',
     high: 'high',
+    xhigh: 'xhigh',
     min: 'min',
     max: 'max',
 };
@@ -1153,6 +1154,8 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
                 return 'medium';
             case REASONING_EFFORT.high:
                 return 'high';
+            case REASONING_EFFORT.xhigh:
+                return 'xhigh';
             case REASONING_EFFORT.max:
                 return 'max';
         }
@@ -1177,6 +1180,9 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
         case REASONING_EFFORT.high:
             budgetTokens = Math.floor(maxTokens * 0.5);
             break;
+        case REASONING_EFFORT.xhigh:
+            budgetTokens = Math.floor(maxTokens * 0.75);
+            break;
         case REASONING_EFFORT.max:
             budgetTokens = Math.floor(maxTokens * 0.9);
             break;
@@ -1198,7 +1204,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
  * @returns {string|null} Effort level for the API, or null to use API default
  */
 export function getClaudeAdaptiveEffort(reasoningEffort, model) {
-    const isOpus46 = /^claude-opus-4-6/.test(model);
+    const isOpus467 = /^claude-opus-4-(6|7)/.test(model);
 
     switch (reasoningEffort) {
         case 'none':
@@ -1211,8 +1217,10 @@ export function getClaudeAdaptiveEffort(reasoningEffort, model) {
             return 'medium';
         case REASONING_EFFORT.high:
             return 'high';
+        case REASONING_EFFORT.xhigh:
+            return 'xhigh';
         case REASONING_EFFORT.max:
-            return isOpus46 ? 'max' : 'high';
+            return isOpus467 ? 'max' : 'high';
         default:
             return null;
     }

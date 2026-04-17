@@ -1299,11 +1299,11 @@ async function sendClaudeRequest(request, response) {
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model);
-        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6)/.test(request.body.model);
-        const useVerbosity = /^claude-(opus-4-5|opus-4-6)/.test(request.body.model);
-        const noPrefillModel = /^claude-(opus-4-6)/.test(request.body.model);
+        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false || /^claude-opus-4-7/.test(request.body.model);
+        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model) && Boolean(request.body.enable_web_search);
+        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
+        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
         const stopSequences = [];
@@ -1386,8 +1386,9 @@ async function sendClaudeRequest(request, response) {
 
         const reasoningEffort = request.body.reasoning_effort;
         const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
+        const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
 
-        if (useThinking && Number.isInteger(budgetTokens)) {
+        if (useThinking && !isThinkingDisabled || /^claude-opus-4-7/.test(request.body.model)) {
             // No prefill when thinking
             fixThinkingPrefill = true;
             const minThinkTokens = 1024;
@@ -1398,7 +1399,7 @@ async function sendClaudeRequest(request, response) {
                 requestBody.max_tokens = newValue;
             }
 
-            if (isAdaptiveThinking || /^claude-opus-4-7/.test(request.body.model)) {
+            if (isAdaptiveThinking) {
                 // Opus 4.6-4.7 / Sonnet 4.6: use adaptive thinking
                 requestBody.thinking = { type: 'adaptive' };
 
@@ -1429,13 +1430,6 @@ async function sendClaudeRequest(request, response) {
 
         if ((fixThinkingPrefill || noPrefillModel) && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {
             convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
-        }
-
-        // Verbosity = 'effort' (same values as OpenAI)
-        if (useVerbosity && request.body.verbosity) {
-            betaHeaders.push('effort-2025-11-24');
-            requestBody.output_config ??= {};
-            requestBody.output_config.effort = request.body.verbosity;
         }
 
         if (betaHeaders.length) {
@@ -2254,6 +2248,17 @@ async function sendXaiRequest(request, response) {
 
         if (request.body.reasoning_effort) {
             bodyParams['reasoning_effort'] = request.body.reasoning_effort === 'high' ? 'high' : 'low';
+        }
+
+        if (request.body.enable_web_search) {
+            bodyParams['search_parameters'] = {
+                mode: 'on',
+                sources: [
+                    { type: 'web', safe_search: false },
+                    { type: 'news', safe_search: false },
+                    { type: 'x' },
+                ],
+            };
         }
 
         if (request.body.json_schema) {
@@ -3482,6 +3487,7 @@ router.post('/generate', async function (request, response) {
                 bodyParams['reasoning'] = { effort: effort };
             }
 
+            const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
             const isClaude = /(?:^|\/)claude[-_]/.test(request.body.model);
             if (enableSystemPromptCache && isClaude) {
                 bodyParams['cache_control'] = {
@@ -3495,15 +3501,12 @@ router.post('/generate', async function (request, response) {
             headers = {};
             bodyParams = {
                 reasoning_effort: request.body.reasoning_effort,
+                private: true,
+                referrer: 'sillytavern',
                 seed: request.body.seed ?? Math.floor(Math.random() * 99999999),
             };
             if (request.body.json_schema) {
-                bodyParams['response_format'] = {
-                    type: 'json_schema',
-                    json_schema: {
-                        schema: request.body.json_schema.value,
-                    },
-                };
+                setJsonObjectFormat(bodyParams, request.body.messages, request.body.json_schema);
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MOONSHOT) {
             apiUrl = new URL(request.body.reverse_proxy || API_MOONSHOT).toString();

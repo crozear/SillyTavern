@@ -209,9 +209,8 @@ async function* parseStreamData(json) {
             };
         }
         return;
-    }
-    // OpenAI-likes
-    else if (Array.isArray(json.choices)) {
+    } else if (Array.isArray(json.choices)) {
+        // OpenAI-likes and friends
         const isNotPrimary = json?.choices?.[0]?.index > 0;
         if (isNotPrimary || json.choices.length === 0) {
             throw new Error('Not a primary swipe', { cause: NOT_PRIMARY });

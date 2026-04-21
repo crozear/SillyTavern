@@ -1994,6 +1994,19 @@
                                                 Cache all system prompts before the first user message for Claude models. Reduces cost and latency for repeated context.
                                             </span>
                                         </div>
+                                        <div id="claude_enable_caching_at_depth_block" data-source="claude" class="range-block" style="display: none; margin-left: 20px;">
+                                            <label for="claude_enable_caching_at_depth" class="checkbox_label widthFreeExpand">
+                                                <input id="claude_enable_caching_at_depth" type="checkbox" />
+                                                <span>
+                                                    <span data-i18n="Enable chat history caching">Enable chat history caching</span>
+                                                </span>
+                                            </label>
+                                            <div class="toggle-description justifyLeft marginBot5">
+                                                <span data-i18n="Cache the chat history as well at the depth configured in config.yaml.">
+                                                    Cache the chat history as well at the depth configured in config.yaml.
+                                                </span>
+                                            </div>
+                                        </div>
                                         <div id="claude_extendedTTL_block" class="range-block" style="display: none; margin-left: 20px;">
                                             <label for="claude_extendedTTL" class="checkbox_label widthFreeExpand">
                                                 <input id="claude_extendedTTL" type="checkbox" />
@@ -2209,10 +2222,8 @@
                                             <strong class="toggle-description justifyLeft marginBot5" data-source="openrouter">
                                                 Request model reasoning = Off with Reasoning Effort = Minimum disables reasoning entirely on models that support that, but can cause errors with some models.
                                             </strong>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Allocates a portion of the response length for thinking (min: 1024 tokens, low: 10%, medium: 25%, high: 50%, max: 95%), but minimum 1024 tokens. Auto does not request thinking.">
-                                                Allocates a portion of the response length for thinking (min: 1024 tokens, low: 10%, medium: 25%, high: 50%, max: 95%), but minimum 1024 tokens. Auto does not request thinking.
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 90%). Auto does not request thinking.">
-                                                Opus 4.6 / Sonnet 4.6: enables adaptive thinking with effort level (low/medium/high/max). Max is Opus 4.6 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, max: 90%). Auto does not request thinking.
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Max is Opus 4.6|4.7 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 90%). Auto does not request thinking.">
+                                                Max is Opus 4.6|4.7 only. Auto uses default (high) effort. Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 90%). Auto does not request thinking.
                                             </div>
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai">
@@ -2232,7 +2243,7 @@
                                             <span>Adaptive Thinking</span>
                                         </label>
                                         <div class="toggle-description justifyLeft marginBot5">
-                                            When checked, Sonnet/Opus 4.6 uses adaptive thinking (<code>type: adaptive</code>). When unchecked, uses the budget_tokens system instead.
+                                            When checked, Sonnet 4.6/Opus 4.6|4.7 uses adaptive thinking (<code>type: adaptive</code>). When unchecked, uses the budget_tokens system instead.
                                         </div>
                                     </div>
                                     <div class="flex-container flexFlowColumn wide100p textAlignCenter marginTop10" data-source="openai,custom,openrouter">

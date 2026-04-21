@@ -371,6 +371,7 @@ export const settingsToUpdate = {
     assistant_impersonation: ['#claude_assistant_impersonation', 'assistant_impersonation', false, false],
     use_sysprompt: ['#use_sysprompt', 'use_sysprompt', true, false],
     claude_enable_caching: ['#claude_enable_caching', 'claude_enable_caching', true, false],
+    claude_enable_caching_at_depth: ['#claude_enable_caching_at_depth', 'claude_enable_caching_at_depth', true, false],
     claude_extendedTTL: ['#claude_extendedTTL', 'claude_extendedTTL', true, false],
     vertexai_auth_mode: ['#vertexai_auth_mode', 'vertexai_auth_mode', false, true],
     vertexai_region: ['#vertexai_region', 'vertexai_region', false, true],
@@ -482,6 +483,7 @@ export const default_settings = {
     assistant_impersonation: '',
     use_sysprompt: false,
     claude_enable_caching: false,
+    claude_enable_caching_at_depth: false,
     claude_extendedTTL: false,
     vertexai_auth_mode: 'express',
     vertexai_region: 'us-central1',
@@ -2820,6 +2822,7 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.top_k = Number(settings.top_k_openai);
         generate_data.use_sysprompt = settings.use_sysprompt;
         generate_data.claude_enable_caching = settings.claude_enable_caching;
+        generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
         generate_data.claude_extendedTTL = settings.claude_extendedTTL;
         generate_data.stop = getCustomStoppingStrings(); // Claude shouldn't have limits on stop strings.
         // Don't add a prefill on quiet gens (summarization) and when using continue prefill.
@@ -4424,6 +4427,7 @@ function loadOpenAISettings(data, settings) {
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
     $('#word_replacement_enabled').prop('checked', oai_settings.word_replacement_enabled);
     $('#claude_extendedTTL_block').toggle(oai_settings.claude_enable_caching);
+    $('#claude_enable_caching_at_depth_block').toggle(oai_settings.claude_enable_caching);
 
     // Don't display Service Account JSON in textarea - it's stored in backend secrets
     $('#vertexai_service_account_json').val('');
@@ -6842,10 +6846,16 @@ export function initOpenAI() {
     $('#claude_enable_caching').on('change', function () {
         oai_settings.claude_enable_caching = !!$('#claude_enable_caching').prop('checked');
         $('#claude_extendedTTL_block').toggle(oai_settings.claude_enable_caching);
+        $('#claude_enable_caching_at_depth_block').toggle(oai_settings.claude_enable_caching);
         if (!oai_settings.claude_enable_caching) {
             oai_settings.claude_extendedTTL = false;
             $('#claude_extendedTTL').prop('checked', false);
         }
+        saveSettingsDebounced();
+    });
+
+    $('#claude_enable_caching_at_depth').on('change', function () {
+        oai_settings.claude_enable_caching_at_depth = !!$('#claude_enable_caching_at_depth').prop('checked');
         saveSettingsDebounced();
     });
 

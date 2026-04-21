@@ -539,8 +539,11 @@ export async function appendFileContent(message, messageText) {
         const fileTexts = [];
         const labeledEntries = [];
         for (const file of message.extra.files) {
-            const fileText = file.text || (await getFileAttachment(file.url));
-            if (fileText) {
+            const rawFileText = file.text || (await getFileAttachment(file.url));
+            if (rawFileText) {
+                // Normalize CRLF/CR to LF so Windows-style line endings don't waste tokens
+                // or survive into the outgoing fileSystemMessage system prompt.
+                const fileText = rawFileText.replace(/\r/g, '');
                 fileTexts.push(fileText);
                 labeledEntries.push(`[${file.name}]: "${fileText}"`);
             }

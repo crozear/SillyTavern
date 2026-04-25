@@ -13,6 +13,7 @@ import { router as quickRepliesRouter } from './endpoints/quick-replies.js';
 import { router as avatarsRouter } from './endpoints/avatars.js';
 import { router as themesRouter } from './endpoints/themes.js';
 import { router as openAiRouter } from './endpoints/openai.js';
+import { router as openAiStorageRouter } from './endpoints/openai-storage.js';
 import { router as googleRouter } from './endpoints/google.js';
 import { router as anthropicRouter } from './endpoints/anthropic.js';
 import { router as tokenizersRouter } from './endpoints/tokenizers.js';
@@ -146,6 +147,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/avatars', avatarsRouter);
     app.use('/api/themes', themesRouter);
     app.use('/api/openai', openAiRouter);
+    app.use('/api/openai-storage', openAiStorageRouter);
     app.use('/api/google', googleRouter);
     app.use('/api/anthropic', anthropicRouter);
     app.use('/api/tokenizers', tokenizersRouter);

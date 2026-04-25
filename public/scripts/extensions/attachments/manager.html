@@ -128,6 +128,80 @@
         <div class="chatAttachmentsList attachmentsList"></div>
     </div>
 
+    <div class="justifyLeft openaiStoreAttachmentsBlock marginBot10">
+        <hr>
+        <h3 class="openaiStoreAttachmentsTitle margin0 title_restorable">
+            <span data-i18n="OpenAI Vector Store Files">
+                OpenAI Vector Store Files
+            </span>
+            <div class="openActionModalButton menu_button menu_button_icon">
+                <i class="fa-solid fa-plus"></i>
+                <span data-i18n="Add">Add</span>
+            </div>
+        </h3>
+        <small data-i18n="Files added here are uploaded to OpenAI Files and can be attached to OpenAI vector stores for use with the file_search tool.">
+            Files added here are uploaded to OpenAI Files and can be attached to OpenAI vector stores for use with the file_search tool.
+        </small>
+
+        <div class="openaiStorePanel marginTopBot5 flex-container flexFlowColumn flexGap5">
+            <div class="flex-container flexGap5 alignItemsCenter">
+                <strong data-i18n="Vector Stores:">Vector Stores:</strong>
+                <select id="openai_vector_store_select" class="text_pole flex1 textarea_compact"></select>
+                <div id="openai_vector_store_refresh" class="menu_button menu_button_icon" title="Refresh"><i class="fa-solid fa-rotate"></i></div>
+                <div id="openai_vector_store_create" class="menu_button menu_button_icon" title="Create new vector store"><i class="fa-solid fa-plus"></i></div>
+                <div id="openai_vector_store_delete" class="menu_button menu_button_icon" title="Delete selected vector store"><i class="fa-solid fa-trash"></i></div>
+            </div>
+            <div class="flex-container flexGap5 alignItemsCenter">
+                <label class="checkbox_label" title="Use the selected vector store as a default for file_search.">
+                    <input type="checkbox" id="openai_vector_store_default">
+                    <span data-i18n="Use as default for file_search">Use as default for file_search</span>
+                </label>
+            </div>
+
+            <details class="marginTopBot5">
+                <summary data-i18n="Chunking strategy (applied when attaching new files)"><b>Chunking strategy</b> (applied when attaching new files)</summary>
+                <div class="flex-container flexGap10 marginTop5 flexWrap alignItemsCenter">
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="openai_chunking_auto" checked>
+                        <span data-i18n="Auto">Auto</span>
+                    </label>
+                    <label class="flex-container flexGap5 alignItemsCenter">
+                        <span data-i18n="Max chunk tokens">Max chunk tokens</span>
+                        <input type="number" id="openai_chunking_max_tokens" class="text_pole" min="100" max="4096" value="800" style="width: 6em;">
+                    </label>
+                    <label class="flex-container flexGap5 alignItemsCenter">
+                        <span data-i18n="Overlap tokens">Overlap tokens</span>
+                        <input type="number" id="openai_chunking_overlap" class="text_pole" min="0" max="2048" value="400" style="width: 6em;">
+                    </label>
+                    <small><span data-i18n="Overlap must be ≤ max / 2.">Overlap must be ≤ max / 2.</span></small>
+                </div>
+            </details>
+
+            <details class="marginTopBot5">
+                <summary><b data-i18n="file_search ranking">file_search ranking</b></summary>
+                <div class="flex-container flexGap10 marginTop5 flexWrap alignItemsCenter">
+                    <label class="flex-container flexGap5 alignItemsCenter">
+                        <span data-i18n="Max results">Max results</span>
+                        <input type="number" id="openai_file_search_max" class="text_pole" min="1" max="50" value="20" style="width: 5em;">
+                    </label>
+                    <label class="flex-container flexGap5 alignItemsCenter">
+                        <span data-i18n="Score threshold">Score threshold</span>
+                        <input type="number" id="openai_file_search_threshold" class="text_pole" min="0" max="1" step="0.05" value="0" style="width: 5em;">
+                    </label>
+                    <label class="flex-container flexGap5 alignItemsCenter">
+                        <span data-i18n="Ranker">Ranker</span>
+                        <select id="openai_file_search_ranker" class="text_pole textarea_compact">
+                            <option value="auto">auto</option>
+                            <option value="default-2024-11-15">default-2024-11-15</option>
+                        </select>
+                    </label>
+                </div>
+            </details>
+        </div>
+
+        <div class="openaiStoreAttachmentsList attachmentsList"></div>
+    </div>
+
     <div class="attachmentListItemTemplate template_element">
         <div class="attachmentListItem flex-container alignItemsCenter flexGap10">
             <div class="attachmentListItemCheckboxContainer"><input type="checkbox" class="attachmentListItemCheckbox"></div>

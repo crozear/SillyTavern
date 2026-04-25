@@ -2325,6 +2325,7 @@ async function loadDrawthingsModels() {
 
 async function loadOpenAiModels() {
     return [
+        { value: 'gpt-image-2', text: 'gpt-image-2' },
         { value: 'gpt-image-1.5', text: 'gpt-image-1.5' },
         { value: 'gpt-image-1-mini', text: 'gpt-image-1-mini' },
         { value: 'gpt-image-1', text: 'gpt-image-1' },

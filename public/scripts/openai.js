@@ -389,6 +389,8 @@ export const settingsToUpdate = {
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
     service_tier: ['#openai_service_tier', 'service_tier', false, false],
     enable_web_search: ['#openai_enable_web_search', 'enable_web_search', true, false],
+    enable_file_search: ['#openai_enable_file_search', 'enable_file_search', true, false],
+    enable_code_interpreter: ['#openai_enable_code_interpreter', 'enable_code_interpreter', true, false],
     seed: ['#seed_openai', 'seed', false, false],
     n: ['#n_openai', 'n', false, false],
     bypass_status_check: ['#openai_bypass_status_check', 'bypass_status_check', true, true],
@@ -504,6 +506,8 @@ export const default_settings = {
     reasoning_effort: reasoning_effort_types.auto,
     verbosity: verbosity_levels.auto,
     enable_web_search: false,
+    enable_file_search: false,
+    enable_code_interpreter: false,
     request_images: false,
     request_image_aspect_ratio: '',
     request_image_resolution: '',
@@ -2764,6 +2768,13 @@ export async function createGenerationParameters(settings, model, type, messages
         'word_replacement_enabled': Boolean(oai_settings.word_replacement_enabled),
         'reasoning_effort': getReasoningEffort(settings, model),
         'enable_web_search': Boolean(settings.enable_web_search),
+        'enable_file_search': Boolean(settings.enable_file_search),
+        'enable_code_interpreter': Boolean(settings.enable_code_interpreter),
+        'openai_vector_store_ids': Array.isArray(extension_settings.openai_storage?.default_vector_store_ids)
+            ? extension_settings.openai_storage.default_vector_store_ids : [],
+        'file_search_max_num_results': Number(extension_settings.openai_storage?.file_search_max_num_results ?? 20),
+        'file_search_score_threshold': Number(extension_settings.openai_storage?.file_search_score_threshold ?? 0),
+        'file_search_ranker': String(extension_settings.openai_storage?.file_search_ranker ?? 'auto'),
         'request_images': Boolean(settings.request_images),
         'request_image_resolution': String(settings.request_image_resolution),
         'request_image_aspect_ratio': String(settings.request_image_aspect_ratio),
@@ -3228,6 +3239,31 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
             if (show_thoughts) {
                 state.reasoning += data.delta || '';
             }
+            return '';
+        }
+        // code_interpreter: surface running code in the reasoning channel for visibility
+        /** @type {any} */
+        const s = state;
+        /** @type {any} */
+        const d = data;
+        if (show_thoughts && (d.type === 'response.code_interpreter_call.code.delta' || d.type === 'response.code_interpreter_call_code.delta')) {
+            if (!s.codeInterpreterOpen) {
+                s.reasoning += '\n\n```python\n';
+                s.codeInterpreterOpen = true;
+            }
+            s.reasoning += d.delta || '';
+            return '';
+        }
+        if (show_thoughts && (d.type === 'response.code_interpreter_call.code.done' || d.type === 'response.code_interpreter_call_code.done')) {
+            if (s.codeInterpreterOpen) {
+                s.reasoning += '\n```\n';
+                s.codeInterpreterOpen = false;
+            }
+            return '';
+        }
+        // file_search: brief status note in reasoning so users know it ran
+        if (show_thoughts && d.type === 'response.file_search_call.completed') {
+            s.reasoning += '\n\n*[file_search completed]*\n';
             return '';
         }
         // Completed reasoning item — extract content if not already streamed

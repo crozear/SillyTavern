@@ -3173,8 +3173,43 @@ router.post('/bias', async function (request, response) {
 });
 
 /**
+ * Converts a chat completions message content array into Responses API content parts.
+ * Mirrors response_input_*_param.py shapes (input_text / input_image / input_file).
+ * @param {any} content
+ * @returns {any}
+ */
+function convertResponsesContent(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content;
+    return content.map(part => {
+        if (!part || typeof part !== 'object') return part;
+        if (part.type === 'text') return { type: 'input_text', text: part.text ?? '' };
+        if (part.type === 'image_url') {
+            const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
+            const detail = part.image_url?.detail;
+            return { type: 'input_image', image_url: url, ...(detail ? { detail } : {}) };
+        }
+        if (part.type === 'input_audio' || part.type === 'audio') {
+            return { type: 'input_audio', input_audio: part.input_audio || part.audio };
+        }
+        if (part.type === 'file') {
+            const f = part.file || {};
+            /** @type {any} */
+            const out = { type: 'input_file' };
+            if (f.file_id) out.file_id = f.file_id;
+            if (f.file_data) out.file_data = f.file_data;
+            if (f.file_url) out.file_url = f.file_url;
+            if (f.filename) out.filename = f.filename;
+            return out;
+        }
+        // Already a Responses-API-shaped part (input_text/input_image/input_file/output_text)
+        return part;
+    });
+}
+
+/**
  * Converts a chat completions request body in-place to the OpenAI Responses API format.
- * @param {object} requestBody The request body to transform
+ * @param {any} requestBody The request body to transform
  */
 function convertToResponsesApiRequest(requestBody) {
     // messages → input; first developer message → instructions param, rest → system role
@@ -3182,14 +3217,13 @@ function convertToResponsesApiRequest(requestBody) {
         let firstSystemUsed = false;
         const input = [];
         for (const msg of requestBody.messages) {
-            // Only keep valid Responses API fields (role, content, name) — strip extension metadata
-            const cleanMsg = { role: msg.role, content: msg.content };
+            const cleanMsg = { role: msg.role, content: convertResponsesContent(msg.content) };
             if (msg.name) cleanMsg.name = msg.name;
 
             if (cleanMsg.role === 'developer' && !firstSystemUsed) {
                 requestBody.instructions = typeof cleanMsg.content === 'string'
                     ? cleanMsg.content
-                    : cleanMsg.content.map(p => p.text ?? '').join('');
+                    : (Array.isArray(cleanMsg.content) ? cleanMsg.content.map(p => p.text ?? '').join('') : '');
                 firstSystemUsed = true;
             } else if (cleanMsg.role === 'developer') {
                 input.push({ ...cleanMsg, role: 'system' });
@@ -3230,14 +3264,13 @@ function convertToResponsesApiRequest(requestBody) {
         }
     }
 
-    // Request reasoning summaries so we can show thinking content
-    //    requestBody.include = requestBody.include || [];
-    //    if (!requestBody.include.includes('reasoning.encrypted_content')) {
-    //        requestBody.include.push('reasoning.encrypted_content');
-    //    }
-
-    // Don't store conversations on OpenAI's servers
-    requestBody.store = true;
+    // Don't store conversations on OpenAI's servers by default; allow opt-in via flag
+    if (typeof requestBody.responses_store === 'boolean') {
+        requestBody.store = requestBody.responses_store;
+    } else {
+        requestBody.store = true;
+    }
+    delete requestBody.responses_store;
 
     // Remove unsupported parameters
     if (!requestBody.reasoning.effort || requestBody.reasoning.effort === 'none') {
@@ -3256,6 +3289,102 @@ function convertToResponsesApiRequest(requestBody) {
     delete requestBody.presence_penalty;
     delete requestBody.stop;
     delete requestBody.seed;
+}
+
+/**
+ * Builds the `tools` and `include` arrays for an outgoing Responses API request based on
+ * frontend-supplied flags. Mirrors *_param.py TypedDicts in the OpenAI SDK.
+ * Mutates `requestBody` in place.
+ * @param {any} originalBody The original request.body from the client (for flags)
+ * @param {any} requestBody The outgoing Responses API request body to mutate
+ */
+function buildResponsesTools(originalBody, requestBody) {
+    /** @type {any[]} */
+    const tools = Array.isArray(requestBody.tools) ? requestBody.tools : [];
+    /** @type {string[]} */
+    const include = Array.isArray(requestBody.include) ? requestBody.include : [];
+
+    const addInclude = (key) => { if (!include.includes(key)) include.push(key); };
+
+    // file_search
+    if (originalBody.enable_file_search && Array.isArray(originalBody.openai_vector_store_ids) && originalBody.openai_vector_store_ids.length) {
+        /** @type {any} */
+        const tool = {
+            type: 'file_search',
+            vector_store_ids: originalBody.openai_vector_store_ids,
+        };
+        if (Number.isFinite(originalBody.file_search_max_num_results)) {
+            tool.max_num_results = Math.max(1, Math.min(50, Number(originalBody.file_search_max_num_results)));
+        }
+        /** @type {any} */
+        const ranking = {};
+        if (originalBody.file_search_ranker) ranking.ranker = originalBody.file_search_ranker;
+        if (Number.isFinite(originalBody.file_search_score_threshold)) {
+            ranking.score_threshold = Math.max(0, Math.min(1, Number(originalBody.file_search_score_threshold)));
+        }
+        if (Object.keys(ranking).length) tool.ranking_options = ranking;
+        if (!tools.some(t => t?.type === 'file_search')) tools.push(tool);
+        addInclude('file_search_call.results');
+    }
+
+    // web_search (existing behavior preserved)
+    if (originalBody.enable_web_search) {
+        if (!tools.some(t => t?.type === 'web_search' || t?.type === 'web_search_preview')) {
+            tools.push({ type: 'web_search' });
+        }
+    }
+
+    // code_interpreter
+    if (originalBody.enable_code_interpreter) {
+        if (!tools.some(t => t?.type === 'code_interpreter')) {
+            tools.push({ type: 'code_interpreter', container: { type: 'auto' } });
+        }
+        addInclude('code_interpreter_call.outputs');
+    }
+
+    // user-defined custom function tools (Responses API shape: flat, not { function: { ... } })
+    if (Array.isArray(originalBody.custom_functions)) {
+        for (const fn of originalBody.custom_functions) {
+            if (!fn?.name) continue;
+            tools.push({
+                type: 'function',
+                name: fn.name,
+                description: fn.description ?? null,
+                parameters: fn.parameters ?? null,
+                strict: fn.strict ?? true,
+            });
+        }
+    }
+
+    // skills (inline base64 zip OR skill_reference)
+    if (Array.isArray(originalBody.skills)) {
+        for (const sk of originalBody.skills) {
+            if (!sk?.type) continue;
+            if (sk.type === 'skill_reference' && sk.skill_id) {
+                const entry = { type: 'skill_reference', skill_id: sk.skill_id };
+                if (sk.version) entry.version = sk.version;
+                tools.push(entry);
+            } else if (sk.type === 'inline' && sk.name && sk.data_b64) {
+                tools.push({
+                    type: 'inline',
+                    name: sk.name,
+                    description: sk.description ?? '',
+                    source: { type: 'base64', media_type: 'application/zip', data: sk.data_b64 },
+                });
+            }
+        }
+    }
+
+    if (tools.length) requestBody.tools = tools;
+    if (include.length) requestBody.include = include;
+
+    // tool_choice passthrough (string or object)
+    if (originalBody.tool_choice !== undefined && requestBody.tool_choice === undefined) {
+        requestBody.tool_choice = originalBody.tool_choice;
+    }
+    if (typeof originalBody.parallel_tool_calls === 'boolean') {
+        requestBody.parallel_tool_calls = originalBody.parallel_tool_calls;
+    }
 }
 
 router.post('/generate', async function (request, response) {
@@ -3668,21 +3797,15 @@ router.post('/generate', async function (request, response) {
         // Transform request body for the OpenAI Responses API
         if (useResponsesApi) {
             convertToResponsesApiRequest(requestBody);
+            buildResponsesTools(request.body, requestBody);
         }
 
-        // Enable backend web search for OpenAI / OpenAI-compatible CUSTOM endpoints.
-        // Responses API uses a `web_search` tool entry; Chat Completions uses `web_search_options`.
-        if (request.body.enable_web_search && [CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.CUSTOM].includes(request.body.chat_completion_source)) {
+        // Chat Completions web_search_options for non-Responses OpenAI / CUSTOM
+        if (!useResponsesApi && request.body.enable_web_search && !isTextCompletion
+            && [CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.CUSTOM].includes(request.body.chat_completion_source)) {
             /** @type {any} */
             const rb = requestBody;
-            if (useResponsesApi) {
-                rb.tools = Array.isArray(rb.tools) ? rb.tools : [];
-                if (!rb.tools.some((/** @type {any} */ t) => t?.type === 'web_search' || t?.type === 'web_search_preview')) {
-                    rb.tools.push({ type: 'web_search' });
-                }
-            } else if (!isTextCompletion) {
-                rb.web_search_options = rb.web_search_options || {};
-            }
+            rb.web_search_options = rb.web_search_options || {};
         }
 
         if (request.body.model?.startsWith('gpt') && requestBody.top_k !== undefined) {

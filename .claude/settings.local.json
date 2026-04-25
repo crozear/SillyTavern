@@ -1,24 +1,28 @@
 {
-  "permissions": {
-    "allow": [
-    "Bash(npm install:*)",
-    "Bash(cygpath:*)",
-    "Read(//c//**)",
-    "Bash(node -e:*)",
-    "Bash(npm run lint:*)",
-    "Bash(npx eslint:*)",
-    "Bash(./node_modules/.bin/eslint:*)",
-    "Bash(ls:*)",
-    "Bash(node -c:*)",
-    "Bash(node --check:*)",
-    "Bash(echo:*)",
-    "Bash(curl:*)",
-    "Bash(python3 -c \":*)"
-  ]
-  },
-  "autoMemoryEnabled": false,
   "skillListingMaxDescChars": 120,
   "skillListingBudgetFraction": 0.002,
+  "env": {
+    "ENABLE_PROMPT_CACHING_1H": "0",
+    "FORCE_PROMPT_CACHING_5M": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(cygpath:*)",
+      "Read(//c//**)",
+      "Bash(node -e:*)",
+      "Bash(npm run lint:*)",
+      "Bash(npx eslint:*)",
+      "Bash(./node_modules/.bin/eslint:*)",
+      "Bash(ls:*)",
+      "Bash(node -c:*)",
+      "Bash(node --check:*)",
+      "Bash(echo:*)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(grep -n \"useResponsesApi.*=\" c:\\\\\\\\Users\\\\\\\\brend\\\\\\\\Desktop\\\\\\\\SillyTavern\\\\\\\\src\\\\\\\\endpoints\\\\\\\\backends\\\\\\\\chat-completions.js)"
+    ]
+  },
   "skillOverrides": {
     "update-config": "user-invocable-only",
     "keybindings-help": "user-invocable-only",
@@ -61,9 +65,5 @@
   },
   "outputStyle": "default",
   "prefersReducedMotion": true,
-  "env": {
-    "ENABLE_PROMPT_CACHING_1H": "0",
-    "FORCE_PROMPT_CACHING_5M": "1"
-  }
+  "autoMemoryEnabled": false
 }
-

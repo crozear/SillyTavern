@@ -81,6 +81,7 @@ const ATTACHMENT_SOURCE = {
     GLOBAL: 'global',
     CHARACTER: 'character',
     CHAT: 'chat',
+    OPENAI_STORE: 'openai_store',
 };
 
 /**
@@ -1338,6 +1339,21 @@ export async function deleteAttachment(attachment, source, callback, confirm = t
         case 'character':
             extension_settings.character_attachments[characters[this_chid]?.avatar] = extension_settings.character_attachments[characters[this_chid]?.avatar].filter((a) => a.url !== attachment.url);
             break;
+        case 'openai_store':
+            try {
+                const mod = await import('./openai-storage.js');
+                if (attachment.openai_file_id) {
+                    for (const vsId of (attachment.vector_store_ids || [])) {
+                        try { await mod.detachFileFromStore(vsId, attachment.openai_file_id); } catch (e) { console.warn('detach failed', e); }
+                    }
+                    try { await mod.deleteOpenAIFile(attachment.openai_file_id); } catch (e) { console.warn('OpenAI file delete failed', e); }
+                }
+            } catch (e) {
+                console.warn('openai-storage cleanup failed', e);
+            }
+            extension_settings.openai_store_attachments = (extension_settings.openai_store_attachments ?? []).filter((a) => a.url !== attachment.url);
+            saveSettingsDebounced();
+            break;
     }
 
     if (Array.isArray(extension_settings.disabled_attachments) && extension_settings.disabled_attachments.includes(attachment.url)) {
@@ -1400,6 +1416,7 @@ async function openAttachmentManager() {
             [ATTACHMENT_SOURCE.GLOBAL]: '.globalAttachmentsList',
             [ATTACHMENT_SOURCE.CHARACTER]: '.characterAttachmentsList',
             [ATTACHMENT_SOURCE.CHAT]: '.chatAttachmentsList',
+            [ATTACHMENT_SOURCE.OPENAI_STORE]: '.openaiStoreAttachmentsList',
         };
 
         const selected = template
@@ -1446,6 +1463,7 @@ async function openAttachmentManager() {
             [ATTACHMENT_SOURCE.GLOBAL]: '.globalAttachmentsTitle',
             [ATTACHMENT_SOURCE.CHARACTER]: '.characterAttachmentsTitle',
             [ATTACHMENT_SOURCE.CHAT]: '.chatAttachmentsTitle',
+            [ATTACHMENT_SOURCE.OPENAI_STORE]: '.openaiStoreAttachmentsTitle',
         };
 
         const modal = template.find('.actionButtonsModal').hide();
@@ -1522,9 +1540,13 @@ async function openAttachmentManager() {
         /** @type {FileAttachment[]} */
         const characterAttachments = extension_settings.character_attachments?.[characters[this_chid]?.avatar] ?? [];
 
+        /** @type {FileAttachment[]} */
+        const openaiStoreAttachments = extension_settings.openai_store_attachments ?? [];
+
         await renderList(globalAttachments, ATTACHMENT_SOURCE.GLOBAL);
         await renderList(chatAttachments, ATTACHMENT_SOURCE.CHAT);
         await renderList(characterAttachments, ATTACHMENT_SOURCE.CHARACTER);
+        await renderList(openaiStoreAttachments, ATTACHMENT_SOURCE.OPENAI_STORE);
 
         const isNotCharacter = this_chid === undefined || selected_group;
         const isNotInChat = getCurrentChatId() === undefined;
@@ -1562,6 +1584,13 @@ async function openAttachmentManager() {
     let filterString = '';
 
     const template = $(await renderExtensionTemplateAsync('attachments', 'manager', {}));
+
+    try {
+        const mod = await import('./openai-storage.js');
+        mod.initOpenAIStorePanel(template);
+    } catch (e) {
+        console.warn('OpenAI storage panel init failed', e);
+    }
 
     template.find('.attachmentSearch').on('input', function () {
         filterString = String($(this).val());
@@ -1773,6 +1802,36 @@ export async function uploadFileAttachmentToServer(file, target) {
             extension_settings.character_attachments[characters[this_chid]?.avatar].push(attachment);
             saveSettingsDebounced();
             break;
+        case ATTACHMENT_SOURCE.OPENAI_STORE:
+            try {
+                const mod = await import('./openai-storage.js');
+                const uploaded = await mod.uploadOpenAIFile(file.name, base64Data);
+                if (uploaded?.id) {
+                    const attachedTo = [];
+                    Object.assign(attachment, {
+                        openai_file_id: uploaded.id,
+                        openai_bytes: uploaded.bytes,
+                        vector_store_ids: attachedTo,
+                    });
+                    const defaults = mod.getDefaultVectorStoreIds();
+                    for (const vsId of defaults) {
+                        try {
+                            const batch = await mod.attachFilesToStore(vsId, [uploaded.id], mod.buildChunkingStrategy());
+                            attachedTo.push(vsId);
+                            mod.pollBatchUntilDone(vsId, batch.id).catch(e => console.warn('batch poll failed', e));
+                        } catch (e) {
+                            console.warn('attach to store failed', vsId, e);
+                            toastr.warning(`Attach to ${vsId} failed: ${e?.message || e}`);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('OpenAI storage upload failed', error);
+                toastr.error(String(error?.message || error), t`OpenAI upload failed`);
+            }
+            extension_settings.openai_store_attachments.push(attachment);
+            saveSettingsDebounced();
+            break;
     }
 
     return fileUrl;
@@ -1785,6 +1844,10 @@ function ensureAttachmentsExist() {
 
     if (!Array.isArray(extension_settings.attachments)) {
         extension_settings.attachments = [];
+    }
+
+    if (!Array.isArray(extension_settings.openai_store_attachments)) {
+        extension_settings.openai_store_attachments = [];
     }
 
     if (!Array.isArray(chat_metadata.attachments)) {
@@ -1833,6 +1896,8 @@ export function getDataBankAttachmentsForSource(source, includeDisabled = true) 
                 return chat_metadata.attachments ?? [];
             case ATTACHMENT_SOURCE.CHARACTER:
                 return extension_settings.character_attachments?.[characters[this_chid]?.avatar] ?? [];
+            case ATTACHMENT_SOURCE.OPENAI_STORE:
+                return extension_settings.openai_store_attachments ?? [];
         }
 
         return [];

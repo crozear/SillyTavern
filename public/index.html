@@ -2035,6 +2035,28 @@
                                             </b>
                                         </div>
                                     </div>
+                                    <div class="range-block" data-source="openai">
+                                        <label for="openai_enable_file_search" class="checkbox_label flexWrap widthFreeExpand">
+                                            <input id="openai_enable_file_search" type="checkbox" />
+                                            <span data-i18n="Enable file search">Enable file search</span>
+                                        </label>
+                                        <div class="flexBasis100p toggle-description justifyLeft">
+                                            <span data-i18n="openai_file_search_desc">
+                                                Lets reasoning models search your OpenAI vector stores. Manage stores and chunking in the Data Bank under "OpenAI Vector Store Files".
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div class="range-block" data-source="openai">
+                                        <label for="openai_enable_code_interpreter" class="checkbox_label flexWrap widthFreeExpand">
+                                            <input id="openai_enable_code_interpreter" type="checkbox" />
+                                            <span data-i18n="Enable code interpreter">Enable code interpreter</span>
+                                        </label>
+                                        <div class="flexBasis100p toggle-description justifyLeft">
+                                            <span data-i18n="openai_code_interpreter_desc">
+                                                Lets reasoning models execute Python in a sandboxed container.
+                                            </span>
+                                        </div>
+                                    </div>
                                     <div class="range-block" data-source="openai,cohere,mistralai,custom,claude,aimlapi,openrouter,groq,siliconflow,deepseek,makersuite,vertexai,ai21,xai,pollinations,moonshot,fireworks,cometapi,electronhub,chutes,azure_openai,zai,nanogpt">
                                         <label for="openai_function_calling" class="checkbox_label flexWrap widthFreeExpand">
                                             <input id="openai_function_calling" type="checkbox" />

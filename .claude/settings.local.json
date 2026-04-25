@@ -1,21 +1,69 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:platform.openai.com)",
-      "Bash(git fetch:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(npm run test:unit:*)",
-      "Bash(node:*)",
-      "mcp__plugin_context7_context7__resolve-library-id",
-      "mcp__plugin_context7_context7__query-docs",
-      "Bash(xargs grep *)",
-      "Bash(grep -n \"^function\\\\|^}\\\\s*$\" /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)",
-      "Bash(awk '/^function.*\\\\{/ {start=NR; fname=$0} NR==6915 {print \"Line 6915 is in function at line \" start \": \" fname; exit}' /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)",
-      "Bash(awk '/^export function initOpenAI/ {start=NR} NR==6915 && start {print \"Line 6915 is inside initOpenAI starting at line \" start} NR > start+500 && !found {found=1; end=NR}' /c/Users/brend/Desktop/SillyTavern/public/scripts/openai.js)",
-      "Bash(awk -F: '{print $2}')",
-      "Bash(python3 -c ' *)"
-    ]
+    "Bash(npm install:*)",
+    "Bash(cygpath:*)",
+    "Read(//c//**)",
+    "Bash(node -e:*)",
+    "Bash(npm run lint:*)",
+    "Bash(npx eslint:*)",
+    "Bash(./node_modules/.bin/eslint:*)",
+    "Bash(ls:*)",
+    "Bash(node -c:*)",
+    "Bash(node --check:*)",
+    "Bash(echo:*)",
+    "Bash(curl:*)",
+    "Bash(python3 -c \":*)"
+  ]
   },
-  "outputStyle": "Explanatory"
+  "autoMemoryEnabled": false,
+  "skillListingMaxDescChars": 120,
+  "skillListingBudgetFraction": 0.002,
+  "skillOverrides": {
+    "update-config": "user-invocable-only",
+    "keybindings-help": "user-invocable-only",
+    "simplify": "user-invocable-only",
+    "fewer-permission-prompts": "user-invocable-only",
+    "loop": "user-invocable-only",
+    "schedule": "user-invocable-only",
+    "claude-api": "user-invocable-only",
+    "init": "user-invocable-only",
+    "review": "user-invocable-only",
+    "security-review": "user-invocable-only",
+    "statusline-setup": "user-invocable-only",
+    "superpowers:using-superpowers": "user-invocable-only",
+    "superpowers:systematic-debugging": "user-invocable-only",
+    "superpowers:test-driven-development": "user-invocable-only",
+    "superpowers:brainstorming": "user-invocable-only",
+    "superpowers:writing-plans": "user-invocable-only",
+    "superpowers:subagent-driven-development": "user-invocable-only",
+    "superpowers:executing-plans": "user-invocable-only",
+    "superpowers:dispatching-parallel-agents": "user-invocable-only",
+    "superpowers:verification-before-completion": "user-invocable-only",
+    "superpowers:finishing-a-development-branch": "user-invocable-only",
+    "superpowers:using-git-worktrees": "user-invocable-only",
+    "superpowers:requesting-code-review": "user-invocable-only",
+    "superpowers:receiving-code-review": "user-invocable-only",
+    "superpowers:writing-skills": "user-invocable-only",
+    "code-review:code-review": "user-invocable-only",
+    "frontend-design:frontend-design": "user-invocable-only",
+    "feature-dev:feature-dev": "user-invocable-only"
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": false,
+    "context7@claude-plugins-official": false,
+    "code-review@claude-plugins-official": false,
+    "github@claude-plugins-official": false,
+    "feature-dev@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
+    "superpowers@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": false
+  },
+  "outputStyle": "default",
+  "prefersReducedMotion": true,
+  "env": {
+    "ENABLE_PROMPT_CACHING_1H": "0",
+    "FORCE_PROMPT_CACHING_5M": "1"
+  }
 }
+

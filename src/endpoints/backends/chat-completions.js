@@ -3670,6 +3670,21 @@ router.post('/generate', async function (request, response) {
             convertToResponsesApiRequest(requestBody);
         }
 
+        // Enable backend web search for OpenAI / OpenAI-compatible CUSTOM endpoints.
+        // Responses API uses a `web_search` tool entry; Chat Completions uses `web_search_options`.
+        if (request.body.enable_web_search && [CHAT_COMPLETION_SOURCES.OPENAI, CHAT_COMPLETION_SOURCES.CUSTOM].includes(request.body.chat_completion_source)) {
+            /** @type {any} */
+            const rb = requestBody;
+            if (useResponsesApi) {
+                rb.tools = Array.isArray(rb.tools) ? rb.tools : [];
+                if (!rb.tools.some((/** @type {any} */ t) => t?.type === 'web_search' || t?.type === 'web_search_preview')) {
+                    rb.tools.push({ type: 'web_search' });
+                }
+            } else if (!isTextCompletion) {
+                rb.web_search_options = rb.web_search_options || {};
+            }
+        }
+
         if (request.body.model?.startsWith('gpt') && requestBody.top_k !== undefined) {
             delete requestBody.top_k;
         }

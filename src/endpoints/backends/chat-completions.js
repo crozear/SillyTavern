@@ -3723,7 +3723,12 @@ router.post('/generate', async function (request, response) {
         // Determine if we should use the OpenAI Responses API for this model
         const useResponsesApi = !isTextCompletion
             && request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI
-            && OPENAI_RESPONSES_API_MODELS.some(m => request.body.model?.startsWith(m));
+            && OPENAI_RESPONSES_API_MODELS.flat().some(m => {
+                const model = request.body.model;
+                if (!model) return false;
+                if (m instanceof RegExp) return m.test(model);
+                return model.startsWith(m);
+            });
 
         const textPrompt = isTextCompletion ? convertTextCompletionPrompt(request.body.messages) : '';
         const endpointUrl = useResponsesApi

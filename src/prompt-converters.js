@@ -17,13 +17,14 @@ function normalizeDeveloperRole(messages) {
 }
 
 const REASONING_EFFORT = {
+    none: 'none',
     auto: 'auto',
+    min: 'minimal',
     low: 'low',
     medium: 'medium',
     high: 'high',
     xhigh: 'xhigh',
-    min: 'min',
-    max: 'max',
+    max: 'xhigh'
 };
 
 export const PROMPT_PROCESSING_TYPE = {

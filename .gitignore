@@ -1,3 +1,7 @@
+.claude/
+bias/
+docs/
+st-agent-proxy/
 node_modules/
 public/chats/
 public/characters/

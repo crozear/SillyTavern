@@ -110,7 +110,6 @@ const cachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
     return Number.isInteger(value) && value >= 0 ? value : -1;
 })();
-const enableAdaptiveThinking = getConfigValue('claude.enableAdaptiveThinking', true, 'boolean');
 
 /**
  * Cache for cacheable (writing) OpenRouter model IDs.
@@ -2674,6 +2673,7 @@ async function sendMinimaxRequest(request, response) {
     const apiUrl = request.body.minimax_endpoint === MINIMAX_ENDPOINT.CN
         ? API_MINIMAX_CN : API_MINIMAX;
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.MINIMAX, request.body.secret_id);
+    const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey) {
         console.warn('MiniMax key is missing.');
@@ -2724,7 +2724,7 @@ async function sendMinimaxRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            await forwardFetchResponse(generateResponse, response);
+            forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -3671,6 +3671,7 @@ router.post('/generate', async function (request, response) {
 
             if (isGemini) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
+                bodyParams['service_tier'] = request.body.service_tier;
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             apiUrl = request.body.custom_url;

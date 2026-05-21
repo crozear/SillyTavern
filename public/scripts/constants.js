@@ -30,6 +30,29 @@ export const IGNORE_SYMBOL = Symbol.for('ignore');
  */
 export const VIDEO_EXTENSIONS = ['mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', '3gp', 'mkv', 'mpg'];
 
+export const GEMINI_SAFETY = [
+    {
+        category: 'HARM_CATEGORY_HARASSMENT',
+        threshold: 'OFF',
+    },
+    {
+        category: 'HARM_CATEGORY_HATE_SPEECH',
+        threshold: 'OFF',
+    },
+    {
+        category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+        threshold: 'OFF',
+    },
+    {
+        category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+        threshold: 'OFF',
+    },
+    {
+        category: 'HARM_CATEGORY_CIVIC_INTEGRITY',
+        threshold: 'OFF',
+    },
+];
+
 /**
  * Known generation triggers that can be passed to Generate function.
  */

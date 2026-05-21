@@ -74,3 +74,4 @@ st-agent-proxy/v1/chat/completions/Perplexity/combine_files.py
 st-agent-proxy/v1/chat/completions/Perplexity/Combined.md
 st-agent-proxy/v1/chat/completions/Perplexity/seperate.md
 st-agent-proxy/v1/chat/completions/Perplexity/split_md_files.py
+.claude/settings.local.json

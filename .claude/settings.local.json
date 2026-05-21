@@ -20,7 +20,12 @@
       "Bash(echo:*)",
       "Bash(curl:*)",
       "Bash(python3 -c \":*)",
-      "Bash(grep -n \"useResponsesApi.*=\" c:\\\\\\\\Users\\\\\\\\brend\\\\\\\\Desktop\\\\\\\\SillyTavern\\\\\\\\src\\\\\\\\endpoints\\\\\\\\backends\\\\\\\\chat-completions.js)"
+      "Bash(grep -n \"useResponsesApi.*=\" c:\\\\\\\\Users\\\\\\\\brend\\\\\\\\Desktop\\\\\\\\SillyTavern\\\\\\\\src\\\\\\\\endpoints\\\\\\\\backends\\\\\\\\chat-completions.js)",
+      "Bash(awk '/ *)",
+      "Bash(npx -y eslint@8.57.1 \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\")",
+      "Bash(npx -y -p eslint@8.57.1 -p eslint-plugin-jsdoc@48 eslint \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\")",
+      "Bash(node_modules/.bin/eslint \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\" \"public/scripts/extensions/caption/settings.html\")",
+      "Bash(node_modules/.bin/eslint \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\")"
     ]
   },
   "skillOverrides": {

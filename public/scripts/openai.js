@@ -81,7 +81,7 @@ import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { extension_settings } from './extensions.js';
-import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
+import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE, GEMINI_SAFETY } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
 
 export {
@@ -2971,6 +2971,14 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.quantizations = settings.openrouter_quantizations;
         generate_data.allow_fallbacks = settings.openrouter_allow_fallbacks;
         generate_data.middleout = settings.openrouter_middleout;
+
+        if (/google\/gemini/.test(model)) {
+            generate_data.safety_settings = GEMINI_SAFETY;
+            generate_data.service_tier =  settings.service_tier;
+            if (Number.isFinite(generate_data.temperature)) {
+                generate_data.temperature = clamp(generate_data.temperature, Number.EPSILON, 1.0);
+            }
+        }
     }
 
     if (settings.chat_completion_source === chat_completion_sources.NANOGPT) {

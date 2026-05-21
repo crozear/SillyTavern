@@ -497,7 +497,7 @@ export const OPENAI_REASONING_EFFORT_MAP = {
     medium: 'medium',
     high: 'high',
     xhigh: 'xhigh',
-    max: 'xhigh'
+    max: 'xhigh',
 };
 
 /**

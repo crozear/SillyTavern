@@ -2972,7 +2972,7 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.allow_fallbacks = settings.openrouter_allow_fallbacks;
         generate_data.middleout = settings.openrouter_middleout;
 
-        if (/google\/gemini/.test(model)) {
+        if (/^google/.test(model)) {
             generate_data.safety_settings = GEMINI_SAFETY;
             generate_data.service_tier =  settings.service_tier;
             if (Number.isFinite(generate_data.temperature)) {

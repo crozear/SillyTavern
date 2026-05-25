@@ -2703,6 +2703,10 @@ function getReasoningEffort(settings = null, model = null) {
                     return 'none';
                 }
 
+                if (chat_completion_sources.OPENROUTER === settings.chat_completion_source && /^google\/gemini-3/.test(model)) {
+                    return 'minimal';
+                }
+
                 if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)) {
                     if (/^gpt-5\.(4|5)/.test(model)) {
                         return 'none';
@@ -2974,9 +2978,14 @@ export async function createGenerationParameters(settings, model, type, messages
 
         if (/^google/.test(model)) {
             generate_data.safety_settings = GEMINI_SAFETY;
-            generate_data.service_tier =  settings.service_tier;
+            generate_data.service_tier = settings.service_tier;
             if (Number.isFinite(generate_data.temperature)) {
-                generate_data.temperature = clamp(generate_data.temperature, Number.EPSILON, 1.0);
+                if (/^google\/gemini-3/.test(model) && generate_data.temperature === 1) {
+                    // @ts-ignore - omit redundant default; Gemini 3 uses 1.0 internally
+                    generate_data.temperature = undefined;
+                } else {
+                    generate_data.temperature = clamp(generate_data.temperature, Number.EPSILON, 1.0);
+                }
             }
         }
     }

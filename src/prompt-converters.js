@@ -1147,7 +1147,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
         switch (reasoningEffort) {
             case REASONING_EFFORT.auto:
                 return null;
-            case REASONING_EFFORT.min:
+            case 'min':
                 return 'low';
             case REASONING_EFFORT.low:
                 return 'low';
@@ -1157,7 +1157,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
                 return 'high';
             case REASONING_EFFORT.xhigh:
                 return 'xhigh';
-            case REASONING_EFFORT.max:
+            case 'max':
                 return 'max';
         }
         return null;
@@ -1211,7 +1211,7 @@ export function getClaudeAdaptiveEffort(reasoningEffort, model) {
         case 'none':
         case REASONING_EFFORT.auto:
             return null;
-        case REASONING_EFFORT.min:
+        case 'min':
         case REASONING_EFFORT.low:
             return 'low';
         case REASONING_EFFORT.medium:
@@ -1220,8 +1220,8 @@ export function getClaudeAdaptiveEffort(reasoningEffort, model) {
             return 'high';
         case REASONING_EFFORT.xhigh:
             return 'xhigh';
-        case REASONING_EFFORT.max:
-            return isOpus467 ? 'max' : 'high';
+        case 'max':
+            return isOpus467 ? 'max' : 'xhigh';
         default:
             return null;
     }

@@ -27,9 +27,11 @@
       "Bash(node_modules/.bin/eslint \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\" \"public/scripts/extensions/caption/settings.html\")",
       "Bash(node_modules/.bin/eslint \"src/endpoints/backends/chat-completions.js\" \"src/constants.js\" \"public/scripts/extensions/stable-diffusion/index.js\")",
       "WebFetch(domain:openrouter.ai)",
-      "WebFetch(domain:ai.google.dev)"
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(npx eslint@8 --no-eslintrc -c .eslintrc.cjs \"src/endpoints/backends/chat-completions.js\" \"public/scripts/openai.js\")"
     ]
   },
+  "model": "claude-opus-4-6",
   "skillOverrides": {
     "update-config": "user-invocable-only",
     "keybindings-help": "user-invocable-only",

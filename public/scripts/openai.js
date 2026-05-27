@@ -264,6 +264,7 @@ export const tool_reasoning_modes = {
 const interleaved_reasoning_providers = [
     chat_completion_sources.OPENROUTER,
     chat_completion_sources.CUSTOM,
+    chat_completion_sources.CLAUDE,
 ];
 
 export const ZAI_ENDPOINT = {
@@ -398,6 +399,9 @@ export const settingsToUpdate = {
     tool_call_recurse_limit: ['#tool_call_recurse_limit', 'tool_call_recurse_limit', false, false],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
     claude_use_adaptive_thinking: ['#claude_use_adaptive_thinking', 'claude_use_adaptive_thinking', true, false],
+    claude_task_budget_enabled: ['#claude_task_budget_enabled', 'claude_task_budget_enabled', true, false],
+    claude_task_budget_total: ['#claude_task_budget_total', 'claude_task_budget_total', false, false],
+    claude_task_budget_max_iterations: ['#claude_task_budget_max_iterations', 'claude_task_budget_max_iterations', false, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
@@ -519,6 +523,9 @@ export const default_settings = {
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
     show_thoughts: true,
     claude_use_adaptive_thinking: true,
+    claude_task_budget_enabled: false,
+    claude_task_budget_total: 64000,
+    claude_task_budget_max_iterations: 25,
     word_replacement_enabled: true,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
@@ -2956,6 +2963,9 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.claude_enable_caching = settings.claude_enable_caching;
         generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
         generate_data.claude_extendedTTL = settings.claude_extendedTTL;
+        generate_data.claude_task_budget_enabled = settings.claude_task_budget_enabled;
+        generate_data.claude_task_budget_total = Number(settings.claude_task_budget_total);
+        generate_data.claude_task_budget_max_iterations = Number(settings.claude_task_budget_max_iterations);
         generate_data.stop = getCustomStoppingStrings(); // Claude shouldn't have limits on stop strings.
         // Don't add a prefill on quiet gens (summarization) and when using continue prefill.
         if (type !== 'quiet' && !(type === 'continue' && settings.continue_prefill)) {
@@ -4626,6 +4636,7 @@ function loadOpenAISettings(data, settings) {
     $('#word_replacement_enabled').prop('checked', oai_settings.word_replacement_enabled);
     $('#claude_extendedTTL_block').toggle(oai_settings.claude_enable_caching);
     $('#claude_enable_caching_at_depth_block').toggle(oai_settings.claude_enable_caching);
+    $('#claude_task_budget_total_block').toggle(oai_settings.claude_task_budget_enabled);
 
     // Don't display Service Account JSON in textarea - it's stored in backend secrets
     $('#vertexai_service_account_json').val('');
@@ -7491,6 +7502,22 @@ export function initOpenAI() {
 
     $('#claude_use_adaptive_thinking').on('input', function () {
         oai_settings.claude_use_adaptive_thinking = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#claude_task_budget_enabled').on('change', function () {
+        oai_settings.claude_task_budget_enabled = !!$(this).prop('checked');
+        $('#claude_task_budget_total_block').toggle(oai_settings.claude_task_budget_enabled);
+        saveSettingsDebounced();
+    });
+
+    $('#claude_task_budget_total').on('input', function () {
+        oai_settings.claude_task_budget_total = Number($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#claude_task_budget_max_iterations').on('input', function () {
+        oai_settings.claude_task_budget_max_iterations = Number($(this).val());
         saveSettingsDebounced();
     });
 

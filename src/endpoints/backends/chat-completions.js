@@ -1270,6 +1270,227 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
 }
 
 /**
+ * Runs a non-streaming Claude agentic loop: makes API calls, handles tool_use responses,
+ * and returns when Claude is done or a custom tool is encountered.
+ * Built-in tools (web_search) are resolved by the Claude API internally and appear as
+ * server_tool_use/server_tool_result blocks — they don't produce stop_reason "tool_use".
+ * When stop_reason is "tool_use", the tool_use blocks are custom tools that need
+ * frontend execution, so we break out and let the frontend handle them.
+ * The loop continues only when stop_reason is "tool_use" but all tool_use blocks
+ * can be handled (currently none can be — future server-side tool support goes here).
+ * @param {object} requestBody The initial request body for Claude API
+ * @param {string} apiUrl Claude API URL
+ * @param {object} headers Request headers
+ * @param {AbortController} controller Abort controller
+ * @param {number} maxIterations Maximum loop iterations
+ * @returns {Promise<{allText: string, lastResponse: object}>}
+ */
+async function runClaudeAgenticLoop(requestBody, apiUrl, headers, controller, maxIterations) {
+    const messages = [...requestBody.messages];
+    let allText = '';
+    let lastResponse = null;
+
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+        const iterBody = { ...requestBody, messages, stream: false };
+        const fetchResponse = await fetch(apiUrl + '/messages', {
+            method: 'POST',
+            signal: controller.signal,
+            body: JSON.stringify(iterBody),
+            headers,
+        });
+
+        if (!fetchResponse.ok) {
+            const errorText = await fetchResponse.text();
+            throw new Error(`Claude API error (iteration ${iteration}): ${fetchResponse.status} ${fetchResponse.statusText}\n${errorText}`);
+        }
+
+        lastResponse = await fetchResponse.json();
+        console.debug(`Agentic loop iteration ${iteration}: stop_reason=${lastResponse.stop_reason}`);
+
+        for (const block of lastResponse.content || []) {
+            if (block.type === 'text') allText += block.text;
+        }
+
+        if (lastResponse.stop_reason !== 'tool_use') break;
+
+        // stop_reason "tool_use" means Claude wants us to execute custom tools.
+        // Break out so the frontend ToolManager can handle them via recursive Generate().
+        break;
+    }
+
+    return { allText, lastResponse };
+}
+
+/**
+ * Runs a streaming Claude agentic loop: streams text/thinking deltas to the client
+ * while handling tool_use loops server-side.
+ * When stop_reason is "tool_use", deferred message events are forwarded so the
+ * frontend can detect tool calls, then the loop breaks for frontend handling.
+ * @param {object} requestBody The initial request body for Claude API
+ * @param {string} apiUrl Claude API URL
+ * @param {object} headers Request headers
+ * @param {AbortController} controller Abort controller
+ * @param {express.Response} expressResponse Express response to stream to
+ * @param {object|boolean} wordReplacementsEnabled Word replacement config
+ * @param {number} maxIterations Maximum loop iterations
+ */
+async function runClaudeAgenticLoopStreaming(requestBody, apiUrl, headers, controller, expressResponse, wordReplacementsEnabled, maxIterations) {
+    const messages = [...requestBody.messages];
+    const isWrEnabled = areWordReplacementsEnabled(wordReplacementsEnabled);
+    let isFirstIteration = true;
+
+    expressResponse.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+        const iterBody = { ...requestBody, messages, stream: true };
+        const fetchResponse = await fetch(apiUrl + '/messages', {
+            method: 'POST',
+            signal: controller.signal,
+            body: JSON.stringify(iterBody),
+            headers,
+        });
+
+        if (!fetchResponse.ok) {
+            const errorText = await fetchResponse.text();
+            console.warn(`Agentic loop streaming error (iteration ${iteration}): ${fetchResponse.status} ${errorText}`);
+            if (isFirstIteration) {
+                expressResponse.write(`data: ${JSON.stringify({ error: true, status: fetchResponse.status, message: errorText })}\n\n`);
+            }
+            break;
+        }
+
+        const reconstructed = await consumeAndForwardClaudeStream(fetchResponse, expressResponse, isWrEnabled, isFirstIteration);
+        isFirstIteration = false;
+
+        console.debug(`Agentic loop streaming iteration ${iteration}: stop_reason=${reconstructed.stop_reason}`);
+
+        if (reconstructed.stop_reason !== 'tool_use') break;
+
+        // Forward deferred message_delta/message_stop so the frontend detects tool_use
+        for (const evt of reconstructed.deferredEvents) {
+            if (!expressResponse.writableEnded) expressResponse.write(evt);
+        }
+        break;
+    }
+}
+
+/**
+ * Reads Claude SSE events, forwards text/thinking deltas to the Express response,
+ * and reconstructs the full response for loop logic.
+ * Suppresses message_delta/message_stop when stop_reason is tool_use (loop continues).
+ * Forwards ALL content block events including tool_use so the frontend can detect them
+ * if the loop breaks for custom tools.
+ * @param {import('node-fetch').Response} fetchResponse Fetch response from Claude API
+ * @param {express.Response} expressResponse Express response to stream to
+ * @param {boolean} wordReplacementsEnabled Whether word replacements are active
+ * @param {boolean} forwardMetaEvents Whether to forward message_start events (first iteration only)
+ * @returns {Promise<{content: any[], stop_reason: string, usage: object, deferredEvents: string[]}>}
+ */
+async function consumeAndForwardClaudeStream(fetchResponse, expressResponse, wordReplacementsEnabled, forwardMetaEvents) {
+    const content = [];
+    let stopReason = '';
+    let usage = {};
+    const transformStream = wordReplacementsEnabled ? createWordReplacementStream(wordReplacementsEnabled) : null;
+    const deferredEvents = [];
+
+    const writeToClient = (data) => {
+        if (!expressResponse.writableEnded) {
+            expressResponse.write(data);
+        }
+    };
+
+    const forward = (sseEvent) => {
+        if (transformStream) transformStream.write(sseEvent);
+        else writeToClient(sseEvent);
+    };
+
+    if (transformStream) {
+        transformStream.on('data', (chunk) => writeToClient(chunk));
+    }
+
+    return new Promise((resolve, reject) => {
+        let buffer = '';
+        fetchResponse.body.on('data', (chunk) => {
+            buffer += chunk.toString();
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop();
+            for (const part of parts) {
+                const dataLine = part.split('\n').find(l => l.startsWith('data:'));
+                if (!dataLine) continue;
+                const payload = dataLine.replace(/^data:\s*/, '').trim();
+                if (!payload || payload === '[DONE]') continue;
+                let parsed;
+                try { parsed = JSON.parse(payload); } catch { continue; }
+
+                if (parsed.type === 'message_start' && parsed.message) {
+                    usage = { ...usage, ...parsed.message.usage };
+                    if (forwardMetaEvents) {
+                        forward(`data: ${JSON.stringify(parsed)}\n\n`);
+                    }
+                }
+
+                if (parsed.type === 'content_block_start') {
+                    content[parsed.index] = { ...parsed.content_block };
+                    if (parsed.content_block.type === 'text') content[parsed.index].text = '';
+                    if (parsed.content_block.type === 'thinking') content[parsed.index].thinking = '';
+                    forward(`data: ${JSON.stringify(parsed)}\n\n`);
+                }
+
+                if (parsed.type === 'content_block_delta' && parsed.delta) {
+                    const block = content[parsed.index];
+                    if (block) {
+                        if (parsed.delta.type === 'text_delta') block.text = (block.text || '') + parsed.delta.text;
+                        else if (parsed.delta.type === 'thinking_delta') block.thinking = (block.thinking || '') + parsed.delta.thinking;
+                        else if (parsed.delta.type === 'input_json_delta') block._inputJson = (block._inputJson || '') + parsed.delta.partial_json;
+                    }
+                    forward(`data: ${JSON.stringify(parsed)}\n\n`);
+                }
+
+                if (parsed.type === 'content_block_stop') {
+                    const block = content[parsed.index];
+                    if (block && block._inputJson) {
+                        try { block.input = JSON.parse(block._inputJson); } catch { block.input = {}; }
+                        delete block._inputJson;
+                    }
+                    forward(`data: ${JSON.stringify(parsed)}\n\n`);
+                }
+
+                if (parsed.type === 'message_delta') {
+                    if (parsed.delta?.stop_reason) stopReason = parsed.delta.stop_reason;
+                    if (parsed.usage) usage = { ...usage, ...parsed.usage };
+                    deferredEvents.push(`data: ${JSON.stringify(parsed)}\n\n`);
+                }
+
+                if (parsed.type === 'message_stop') {
+                    deferredEvents.push(`data: ${JSON.stringify(parsed)}\n\n`);
+                }
+            }
+        });
+
+        fetchResponse.body.on('end', () => {
+            const flush = () => {
+                if (stopReason !== 'tool_use') {
+                    for (const evt of deferredEvents) forward(evt);
+                }
+                resolve({ content, stop_reason: stopReason, usage, deferredEvents });
+            };
+            if (transformStream) {
+                transformStream.end();
+                transformStream.on('finish', flush);
+            } else {
+                flush();
+            }
+        });
+        fetchResponse.body.on('error', reject);
+    });
+}
+
+/**
  * Sends a request to Claude API.
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
@@ -1423,7 +1644,16 @@ async function sendClaudeRequest(request, response) {
                     requestBody.output_config ??= {};
                     requestBody.output_config.effort = effort;
                 }
-            } else {
+            }
+
+            if (/^claude-opus-4-7/.test(request.body.model) && request.body.claude_task_budget_enabled) {
+                const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
+                requestBody.output_config ??= {};
+                requestBody.output_config.task_budget = { type: 'tokens', total };
+                betaHeaders.push('task-budgets-2026-03-13');
+            }
+
+            if (!isAdaptiveThinking) {
                 // Older models: use enabled thinking with budget_tokens
                 const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
                 if (Number.isInteger(budgetTokens)) {
@@ -1460,22 +1690,61 @@ async function sendClaudeRequest(request, response) {
 
         console.debug('Claude request:', requestBody);
 
-        const generateResponse = await fetch(apiUrl + '/messages', {
-            method: 'POST',
-            signal: controller.signal,
-            body: JSON.stringify(requestBody),
-            headers: {
-                'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01',
-                'x-api-key': apiKey,
-                ...additionalHeaders,
-            },
-        });
+        const fetchHeaders = {
+            'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            'x-api-key': apiKey,
+            ...additionalHeaders,
+        };
 
-        if (request.body.stream) {
+        const taskBudgetEnabled = /^claude-opus-4-7/.test(request.body.model) && request.body.claude_task_budget_enabled;
+        const useAgenticLoop = taskBudgetEnabled && (useTools || useWebSearch);
+        const maxIterations = Math.min(Math.max(1, Number(request.body.claude_task_budget_max_iterations) || 25), 50);
+
+        if (useAgenticLoop && request.body.stream) {
+            console.info(color.blue(`Starting Claude agentic streaming loop (max ${maxIterations} iterations)`));
+            await runClaudeAgenticLoopStreaming(
+                requestBody, apiUrl, fetchHeaders, controller, response, wordReplacementsEnabled, maxIterations,
+            );
+
+            if (!response.writableEnded) {
+                response.write('data: [DONE]\n\n');
+                response.end();
+            }
+        } else if (useAgenticLoop && !request.body.stream) {
+            console.info(color.blue(`Starting Claude agentic loop (max ${maxIterations} iterations)`));
+            const { allText, lastResponse } = await runClaudeAgenticLoop(
+                requestBody, apiUrl, fetchHeaders, controller, maxIterations,
+            );
+
+            if (!lastResponse) {
+                console.warn(color.red(`Claude agentic loop returned no response.\n${divider}`));
+                return response.status(500).send({ error: true });
+            }
+
+            console.debug('Claude agentic response:', lastResponse);
+            const reply = {
+                choices: [{ message: { content: allText } }],
+                content: lastResponse.content,
+            };
+            return sendWithWordReplacements(response, reply, wordReplacementsEnabled);
+        } else if (request.body.stream) {
+            const generateResponse = await fetch(apiUrl + '/messages', {
+                method: 'POST',
+                signal: controller.signal,
+                body: JSON.stringify(requestBody),
+                headers: fetchHeaders,
+            });
             // Pipe remote SSE stream to Express response
             forwardFetchResponseWithWordReplacements(generateResponse, response, wordReplacementsEnabled);
         } else {
+            const generateResponse = await fetch(apiUrl + '/messages', {
+                method: 'POST',
+                signal: controller.signal,
+                body: JSON.stringify(requestBody),
+                headers: fetchHeaders,
+            });
+
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
                 console.warn(color.red(`Claude API returned error: ${generateResponse.status} ${generateResponse.statusText}\n${generateResponseText}\n${divider}`));

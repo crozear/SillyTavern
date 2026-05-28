@@ -224,20 +224,33 @@ router.post('/tavily', async (request, response) => {
             return response.sendStatus(400);
         }
 
-        const { query, include_images } = request.body;
+        const { query, include_images, search_depth, max_results,
+            include_answer, include_raw_content, include_domains, exclude_domains,
+            country, time_range, exact_match, auto_parameters, chunks_per_source } = request.body;
 
         const body = {
             query: query,
             api_key: apiKey,
-            search_depth: 'basic',
+            search_depth: search_depth || 'basic',
             topic: 'general',
-            include_answer: true,
-            include_raw_content: false,
+            include_answer: include_answer !== false,
+            include_raw_content: !!include_raw_content,
             include_images: !!include_images,
             include_image_descriptions: false,
-            include_domains: [],
-            max_results: 10,
+            max_results: Number(max_results) || 5,
         };
+
+        if (Array.isArray(include_domains) && include_domains.length > 0) {
+            body.include_domains = include_domains;
+        }
+        if (Array.isArray(exclude_domains) && exclude_domains.length > 0) {
+            body.exclude_domains = exclude_domains;
+        }
+        if (country) body.country = country;
+        if (time_range) body.time_range = time_range;
+        if (exact_match) body.exact_match = true;
+        if (auto_parameters) body.auto_parameters = true;
+        if (chunks_per_source) body.chunks_per_source = Number(chunks_per_source);
 
         const result = await fetch('https://api.tavily.com/search', {
             method: 'POST',
@@ -257,6 +270,54 @@ router.post('/tavily', async (request, response) => {
 
         const data = await result.json();
         console.debug('Tavily response', data);
+        return response.json(data);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/tavily-extract', async (request, response) => {
+    try {
+        const apiKey = readSecret(request.user.directories, SECRET_KEYS.TAVILY);
+
+        if (!apiKey) {
+            console.error('No Tavily key found');
+            return response.sendStatus(400);
+        }
+
+        const { urls, query, chunks_per_source } = request.body;
+
+        if (!Array.isArray(urls) || urls.length === 0) {
+            return response.sendStatus(400);
+        }
+
+        const body = {
+            api_key: apiKey,
+            urls: urls,
+        };
+
+        if (query) body.query = query;
+        if (chunks_per_source) body.chunks_per_source = Number(chunks_per_source);
+
+        const result = await fetch('https://api.tavily.com/extract', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+        });
+
+        console.debug('Tavily extract', urls);
+
+        if (!result.ok) {
+            const text = await result.text();
+            console.error('Tavily extract failed', result.statusText, text);
+            return response.status(500).send(text);
+        }
+
+        const data = await result.json();
+        console.debug('Tavily extract response', data);
         return response.json(data);
     } catch (error) {
         console.error(error);

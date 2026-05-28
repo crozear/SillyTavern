@@ -98,18 +98,41 @@ const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 const API_WORKERS_AI = 'https://api.cloudflare.com/client/v4/accounts';
 
 /**
- * Module-scoped Claude caching configuration values.
+ * Module-scoped Claude caching defaults from config.yaml.
  */
 const configExtendedTTL = getConfigValue('claude.extendedTTL', false, 'boolean');
-function getCacheTTL(request) {
-    const extendedTTL = request?.body?.claude_extendedTTL || configExtendedTTL;
-    return extendedTTL ? '1h' : '5m';
-}
-const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
-const cachingAtDepth = (() => {
+const configEnableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
+const configCachingAtDepth = (() => {
     const value = getConfigValue('claude.cachingAtDepth', -1, 'number');
     return Number.isInteger(value) && value >= 0 ? value : -1;
 })();
+
+/**
+ * Resolves Claude caching configuration by merging config.yaml defaults
+ * with request.body overrides from the frontend.
+ * @param {import('express').Request} request
+ * @returns {{ enableSystemPromptCache: boolean, cachingAtDepth: number, ttl: string }}
+ */
+function resolveClaudeCachingConfig(request) {
+    const extendedTTL = request?.body?.claude_extendedTTL ?? configExtendedTTL;
+    const ttl = extendedTTL ? '1h' : '5m';
+
+    const enableSystemPromptCache = (request?.body?.claude_enable_caching !== undefined)
+        ? Boolean(request.body.claude_enable_caching)
+        : configEnableSystemPromptCache;
+
+    let cachingAtDepth = configCachingAtDepth;
+    if (request?.body?.claude_enable_caching_at_depth === false) {
+        cachingAtDepth = -1;
+    } else if (request?.body?.claude_enable_caching_at_depth === true && cachingAtDepth < 0) {
+        cachingAtDepth = 0;
+    }
+    if (request?.body?.claude_enable_caching === false) {
+        cachingAtDepth = -1;
+    }
+
+    return { enableSystemPromptCache, cachingAtDepth, ttl };
+}
 
 /**
  * Cache for cacheable (writing) OpenRouter model IDs.
@@ -1499,19 +1522,8 @@ async function sendClaudeRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
     const divider = '-'.repeat(process.stdout.columns);
-    const enableSystemPromptCache = Boolean(request.body.claude_enable_caching);
+    const { enableSystemPromptCache, cachingAtDepth, ttl: cacheTTL } = resolveClaudeCachingConfig(request);
     const wordReplacementsEnabled = getWordReplacementEnabled(request);
-    let cachingAtDepth = getConfigValue('claude.cachingAtDepth', -1, 'number');
-    // Disabled if not an integer or negative
-    if (!Number.isInteger(cachingAtDepth) || cachingAtDepth < 0) {
-        cachingAtDepth = -1;
-    }
-    // UI toggle: override cachingAtDepth from request body
-    if (request.body.claude_enable_caching_at_depth === false) {
-        cachingAtDepth = -1;
-    } else if (request.body.claude_enable_caching_at_depth === true && cachingAtDepth < 0) {
-        cachingAtDepth = 0;
-    }
 
     if (!apiKey) {
         console.warn(color.red(`Claude API key is missing.\n${divider}`));
@@ -1555,7 +1567,7 @@ async function sendClaudeRequest(request, response) {
         };
         if (useSystemPrompt) {
             if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: getCacheTTL(request) };
+                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
 
             requestBody.system = convertedPrompt.systemPrompt;
@@ -1571,7 +1583,7 @@ async function sendClaudeRequest(request, response) {
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
             if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: getCacheTTL(request) };
+                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
         }
         if (/^claude-opus-4-7/.test(request.body.model)) {
@@ -1599,7 +1611,7 @@ async function sendClaudeRequest(request, response) {
         }
 
         if (cachingAtDepth !== -1) {
-            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, getCacheTTL(request));
+            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
         }
 
         if (enableSystemPromptCache || cachingAtDepth !== -1) {
@@ -2771,12 +2783,13 @@ async function sendElectronHubRequest(request, response) {
         const isClaude = /^claude-/.test(request.body.model);
 
         if (Array.isArray(request.body.messages) && isClaude) {
+            const { enableSystemPromptCache, cachingAtDepth, ttl } = resolveClaudeCachingConfig(request);
             if (enableSystemPromptCache) {
-                cachingSystemPromptForOpenRouter(request.body.messages, '5m');
+                cachingSystemPromptForOpenRouter(request.body.messages, ttl);
             }
 
             if (cachingAtDepth !== -1) {
-                cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, '5m');
+                cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
             }
         }
 
@@ -3924,12 +3937,13 @@ router.post('/generate', async function (request, response) {
                 addOpenRouterSignatures(request.body.messages, request.body.model);
 
                 if (isClaude) {
+                    const { enableSystemPromptCache, cachingAtDepth, ttl } = resolveClaudeCachingConfig(request);
                     if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages, getCacheTTL(request));
+                        cachingSystemPromptForOpenRouter(request.body.messages, ttl);
                     }
 
                     if (cachingAtDepth !== -1) {
-                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, getCacheTTL(request));
+                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
                     }
                 }
 
@@ -4047,13 +4061,15 @@ router.post('/generate', async function (request, response) {
                 bodyParams['reasoning'] = { effort: effort };
             }
 
-            const enableSystemPromptCache = getConfigValue('claude.enableSystemPromptCache', false, 'boolean');
             const isClaude = /(?:^|\/)claude[-_]/.test(request.body.model);
-            if (enableSystemPromptCache && isClaude) {
-                bodyParams['cache_control'] = {
-                    'enabled': true,
-                    'ttl': getCacheTTL(request),
-                };
+            if (isClaude) {
+                const { enableSystemPromptCache, ttl } = resolveClaudeCachingConfig(request);
+                if (enableSystemPromptCache) {
+                    bodyParams['cache_control'] = {
+                        'enabled': true,
+                        'ttl': ttl,
+                    };
+                }
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.POLLINATIONS) {
             apiUrl = API_POLLINATIONS;

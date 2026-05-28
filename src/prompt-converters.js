@@ -1017,7 +1017,7 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
         if (messages[i].role !== previousRoleName) {
             if (depth === cachingAtDepth || depth === cachingAtDepth + 2) {
                 const content = messages[i].content;
-                content[content.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
+                content[content.length - 1].cache_control = { type: 'ephemeral', ttl };
             }
 
             if (depth === cachingAtDepth + 2) {
@@ -1062,13 +1062,13 @@ export function cachingAtDepthForOpenRouterClaude(messages, cachingAtDepth, ttl)
                     messages[i].content = [{
                         type: 'text',
                         text: content,
-                        cache_control: { type: 'ephemeral', ttl: '5m' },
+                        cache_control: { type: 'ephemeral', ttl },
                     }];
                 } else if (content?.length > 0) {
                     const contentPartCount = content.length;
                     content[contentPartCount - 1].cache_control = {
                         type: 'ephemeral',
-                        ttl: '5m',
+                        ttl,
                     };
                 }
             }

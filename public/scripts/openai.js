@@ -2998,6 +2998,12 @@ export async function createGenerationParameters(settings, model, type, messages
                 }
             }
         }
+
+        if (/^anthropic\/claude/.test(model)) {
+            generate_data.claude_enable_caching = settings.claude_enable_caching;
+            generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
+            generate_data.claude_extendedTTL = settings.claude_extendedTTL;
+        }
     }
 
     if (settings.chat_completion_source === chat_completion_sources.NANOGPT) {
@@ -3083,6 +3089,12 @@ export async function createGenerationParameters(settings, model, type, messages
     // https://docs.electronhub.ai/api-reference/chat/completions
     if (settings.chat_completion_source === chat_completion_sources.ELECTRONHUB) {
         generate_data.top_k = Number(settings.top_k_openai);
+
+        if (/^claude-/.test(model)) {
+            generate_data.claude_enable_caching = settings.claude_enable_caching;
+            generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
+            generate_data.claude_extendedTTL = settings.claude_extendedTTL;
+        }
     }
 
     if (settings.chat_completion_source === chat_completion_sources.CHUTES) {
@@ -7157,6 +7169,8 @@ export function initOpenAI() {
         if (!oai_settings.claude_enable_caching) {
             oai_settings.claude_extendedTTL = false;
             $('#claude_extendedTTL').prop('checked', false);
+            oai_settings.claude_enable_caching_at_depth = false;
+            $('#claude_enable_caching_at_depth').prop('checked', false);
         }
         saveSettingsDebounced();
     });

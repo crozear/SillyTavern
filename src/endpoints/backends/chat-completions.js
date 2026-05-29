@@ -1542,7 +1542,7 @@ async function sendClaudeRequest(request, response) {
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
         const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model);
-        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false || /^claude-opus-4-7/.test(request.body.model);
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
         const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model) && Boolean(request.body.enable_web_search);
         const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
         const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model);
@@ -1586,7 +1586,7 @@ async function sendClaudeRequest(request, response) {
                 requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
         }
-        if (/^claude-opus-4-7/.test(request.body.model)) {
+        if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
                 delete requestBody.top_k;
                 delete requestBody.temperature;
                 delete requestBody.top_p;
@@ -1648,7 +1648,7 @@ async function sendClaudeRequest(request, response) {
             }
 
             if (isAdaptiveThinking) {
-                // Opus 4.6-4.7 / Sonnet 4.6: use adaptive thinking
+                // Opus/Sonnet 4.6+: use adaptive thinking
                 requestBody.thinking = { type: 'adaptive' };
 
                 const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);

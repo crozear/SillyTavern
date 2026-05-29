@@ -1205,7 +1205,8 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
  * @returns {string|null} Effort level for the API, or null to use API default
  */
 export function getClaudeAdaptiveEffort(reasoningEffort, model) {
-    const isOpus467 = /^claude-opus-4-(6|7)/.test(model);
+    const hasMax = /-4-(6|7|8)/.test(model);
+    const hasXhigh = /opus-4-(7|8)/.test(model);
 
     switch (reasoningEffort) {
         case 'none':
@@ -1219,9 +1220,9 @@ export function getClaudeAdaptiveEffort(reasoningEffort, model) {
         case REASONING_EFFORT.high:
             return 'high';
         case REASONING_EFFORT.xhigh:
-            return 'xhigh';
+            return hasXhigh ? 'xhigh' : hasMax ? 'max' : 'high';
         case 'max':
-            return isOpus467 ? 'max' : 'xhigh';
+            return hasMax ? 'max' : 'xhigh';
         default:
             return null;
     }

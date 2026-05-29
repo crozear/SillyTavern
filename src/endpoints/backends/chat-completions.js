@@ -1581,10 +1581,10 @@ async function sendClaudeRequest(request, response) {
                 .filter(tool => tool.type === 'function')
                 .map(tool => tool.function)
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
-
-            if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
-            }
+            /*
+            *if (enableSystemPromptCache && requestBody.tools.length) {
+            *    requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+            }*/
         }
         if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
                 delete requestBody.top_k;

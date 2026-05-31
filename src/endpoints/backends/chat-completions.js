@@ -1582,7 +1582,7 @@ async function sendClaudeRequest(request, response) {
                 .map(tool => tool.function)
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
-            if (enableSystemPromptCache && requestBody.tools.length) {
+            if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1) {
                 requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
             }
         }

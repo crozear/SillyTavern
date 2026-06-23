@@ -2989,6 +2989,7 @@ export async function createGenerationParameters(settings, model, type, messages
         if (/^google/.test(model)) {
             generate_data.safety_settings = GEMINI_SAFETY;
             generate_data.service_tier = settings.service_tier;
+            generate_data.claude_enable_caching = settings.claude_enable_caching;
             if (Number.isFinite(generate_data.temperature)) {
                 if (/^google\/gemini-3/.test(model) && generate_data.temperature === 1) {
                     // @ts-ignore - omit redundant default; Gemini 3 uses 1.0 internally

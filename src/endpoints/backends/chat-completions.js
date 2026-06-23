@@ -94,7 +94,6 @@ const API_SILICONFLOW = 'https://api.siliconflow.com/v1';
 const API_SILICONFLOW_CN = 'https://api.siliconflow.cn/v1';
 const API_MINIMAX = 'https://api.minimax.io/v1';
 const API_MINIMAX_CN = 'https://api.minimaxi.com/v1';
-const API_OPENROUTER = 'https://openrouter.ai/api/v1';
 const API_WORKERS_AI = 'https://api.cloudflare.com/client/v4/accounts';
 
 /**
@@ -3898,34 +3897,21 @@ router.post('/generate', async function (request, response) {
                         cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
                     }
                 }
+
+                // Gemini on OpenRouter has no top-level system_instruction field; the system prompt
+                // must stay in the messages array. Caching uses Anthropic-style cache_control
+                // breakpoints inside the system message, and OpenRouter manages the cache TTL itself.
+                if (isGemini) {
+                    const { enableSystemPromptCache } = resolveClaudeCachingConfig(request);
+                    if (enableSystemPromptCache) {
+                        cachingSystemPromptForOpenRouter(request.body.messages);
+                    }
+                }
             }
 
             if (isGemini) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
                 bodyParams['service_tier'] = request.body.service_tier;
-
-                const { enableSystemPromptCache, ttl } = resolveClaudeCachingConfig(request);
-                if (Array.isArray(request.body.messages)) {
-                    const textParts = [];
-                    while (request.body.messages.length > 0 && request.body.messages[0].role === 'system') {
-                        const content = request.body.messages[0].content;
-                        const text = typeof content === 'string' ? content :
-                            (Array.isArray(content) ? content.map(p => p.text ?? '').join('') : String(content));
-                        if (text) textParts.push(text);
-                        request.body.messages.shift();
-                    }
-                    if (textParts.length > 0) {
-                        const combinedText = textParts.join('\n\n');
-                        if (enableSystemPromptCache) {
-                            const cacheControl = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
-                            // @ts-ignore
-                            bodyParams['system_instruction'] = [{ type: 'text', text: combinedText, cache_control: cacheControl }];
-                        } else {
-                            // @ts-ignore
-                            bodyParams['system_instruction'] = combinedText;
-                        }
-                    }
-                }
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             apiUrl = request.body.custom_url;

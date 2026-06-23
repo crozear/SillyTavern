@@ -138,52 +138,6 @@ function resolveClaudeCachingConfig(request) {
  * Cache for cacheable (writing) OpenRouter model IDs.
  * @type {string[]}
  */
-const openRouterCacheableModels = [];
-
-/**
- * Checks if an OpenRouter model supports prompt cache writing.
- * Uses a cache to avoid repeated API calls.
- * @param {string} modelId - The OpenRouter model ID
- * @returns {Promise<boolean>} `true` if the model supports writing cache
- */
-async function isOpenRouterModelCacheable(modelId) {
-    if (openRouterCacheableModels.includes(modelId)) {
-        return true;
-    }
-
-    try {
-        const response = await fetch(`${API_OPENROUTER}/models`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            signal: AbortSignal.timeout(5000),
-        });
-
-        if (!response.ok) {
-            console.warn(`OpenRouter models API returned ${response.status}: ${response.statusText}`);
-            return false;
-        }
-
-        /** @type {any} */
-        const data = await response.json();
-
-        if (!Array.isArray(data?.data)) {
-            console.warn('OpenRouter API response format unexpected');
-            return false;
-        }
-
-        const model = data.data.find(m => m.id === modelId);
-        const supportsCache = model?.pricing?.input_cache_write != null;
-
-        if (supportsCache) {
-            openRouterCacheableModels.push(modelId);
-        }
-
-        return supportsCache;
-    } catch (error) {
-        console.warn(`Failed to check OpenRouter cache support for ${modelId}:`, error.message);
-        return false;
-    }
-}
 
 const WORD_REPLACEMENT_CONFIG = {
     sourceGroups: {
@@ -3929,8 +3883,6 @@ router.post('/generate', async function (request, response) {
 
             const isClaude = /^anthropic\/claude/.test(request.body.model);
             const isGemini = /google\/gemini/.test(request.body.model);
-            const isCacheableGemini = isGemini && await isOpenRouterModelCacheable(request.body.model);
-            const enableGeminiSystemPromptCache = getConfigValue('gemini.enableSystemPromptCache', false, 'boolean');
 
             if (Array.isArray(request.body.messages)) {
                 embedOpenRouterMedia(request.body.messages, { audio: true, video: true });
@@ -3946,15 +3898,34 @@ router.post('/generate', async function (request, response) {
                         cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
                     }
                 }
-
-                if (isCacheableGemini && enableGeminiSystemPromptCache) {
-                    cachingSystemPromptForOpenRouter(request.body.messages);
-                }
             }
 
             if (isGemini) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
                 bodyParams['service_tier'] = request.body.service_tier;
+
+                const { enableSystemPromptCache, ttl } = resolveClaudeCachingConfig(request);
+                if (Array.isArray(request.body.messages)) {
+                    const textParts = [];
+                    while (request.body.messages.length > 0 && request.body.messages[0].role === 'system') {
+                        const content = request.body.messages[0].content;
+                        const text = typeof content === 'string' ? content :
+                            (Array.isArray(content) ? content.map(p => p.text ?? '').join('') : String(content));
+                        if (text) textParts.push(text);
+                        request.body.messages.shift();
+                    }
+                    if (textParts.length > 0) {
+                        const combinedText = textParts.join('\n\n');
+                        if (enableSystemPromptCache) {
+                            const cacheControl = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
+                            // @ts-ignore
+                            bodyParams['system_instruction'] = [{ type: 'text', text: combinedText, cache_control: cacheControl }];
+                        } else {
+                            // @ts-ignore
+                            bodyParams['system_instruction'] = combinedText;
+                        }
+                    }
+                }
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             apiUrl = request.body.custom_url;

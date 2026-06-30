@@ -1494,12 +1494,12 @@ async function sendClaudeRequest(request, response) {
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
         const useSystemPrompt = Boolean(request.body.use_sysprompt);
         const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model);
-        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
-        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model) && Boolean(request.body.enable_web_search);
+        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5)/.test(request.body.model);
+        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
+        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5)/.test(request.body.model) && Boolean(request.body.enable_web_search);
         const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8)/.test(request.body.model);
-        const noSamplingModel = /^claude-(opus-4-7|opus-4-8)/.test(request.body.model);
+        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5)/.test(request.body.model);
+        const noSamplingModel = /^claude-(opus-4-7|opus-4-8|sonnet-5|fable-5)/.test(request.body.model);
         let fixThinkingPrefill = false;
         // Add custom stop sequences
         const stopSequences = [];
@@ -1611,7 +1611,7 @@ async function sendClaudeRequest(request, response) {
                 }
             }
 
-            if (/^claude-opus-4-7|opus-4-8/.test(request.body.model) && request.body.claude_task_budget_enabled) {
+            if (/^claude-opus-4-7|opus-4-8|sonnet-5|fable-5/.test(request.body.model) && request.body.claude_task_budget_enabled) {
                 const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
                 requestBody.output_config ??= {};
                 requestBody.output_config.task_budget = { type: 'tokens', total };
@@ -1662,7 +1662,7 @@ async function sendClaudeRequest(request, response) {
             ...additionalHeaders,
         };
 
-        const taskBudgetEnabled = /^claude-opus-4-7|opus-4-8/.test(request.body.model) && request.body.claude_task_budget_enabled;
+        const taskBudgetEnabled = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5/.test(request.body.model) && request.body.claude_task_budget_enabled;
         const useAgenticLoop = taskBudgetEnabled && (useTools || useWebSearch);
         const maxIterations = Math.min(Math.max(1, Number(request.body.claude_task_budget_max_iterations) || 25), 50);
 

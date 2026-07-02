@@ -622,7 +622,7 @@
         },
         "wi_format": "{0}",
         "openai_model": "gpt-5.1",
-        "claude_model": "claude-opus-4-7",
+        "claude_model": "claude-opus-4-6",
         "ai21_model": "jamba-large",
         "openrouter_model": "OR_Website",
         "reverse_proxy": "",

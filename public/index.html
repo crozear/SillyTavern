@@ -2279,6 +2279,15 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <div class="range-block" data-source="openai">
+                                        <label for="openai_pro_reasoning_mode" class="checkbox_label widthFreeExpand">
+                                            <input id="openai_pro_reasoning_mode" type="checkbox" />
+                                            <span>Pro Reasoning Mode</span>
+                                        </label>
+                                        <div class="toggle-description justifyLeft marginBot5">
+                                            GPT-5.6+ only: sets <code>reasoning.mode: pro</code> for difficult tasks that need more model work (higher latency and token usage). Ignored on other models.
+                                        </div>
+                                    </div>
                                     <div class="range-block" data-source="claude">
                                         <label for="claude_use_adaptive_thinking" class="checkbox_label widthFreeExpand">
                                             <input id="claude_use_adaptive_thinking" type="checkbox" />
@@ -3183,6 +3192,10 @@
                             <div>
                                 <h4 data-i18n="OpenAI Model">OpenAI Model</h4>
                                 <select id="model_openai_select">
+                                    <optgroup label="GPT-5.6">
+                                        <option value="gpt-5.6-sol">gpt-5.6-sol</option>
+                                        <option value="gpt-5.6-terra">gpt-5.6-terra</option>
+                                    </optgroup>
                                     <optgroup label="GPT-5.5">
                                         <option value="gpt-5.5">gpt-5.5</option>
                                         <option value="gpt-5.5-2026-04-23">gpt-5.5-2026-04-23</option>

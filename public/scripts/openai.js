@@ -404,6 +404,7 @@ export const settingsToUpdate = {
     claude_task_budget_max_iterations: ['#claude_task_budget_max_iterations', 'claude_task_budget_max_iterations', false, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
+    pro_reasoning_mode: ['#openai_pro_reasoning_mode', 'pro_reasoning_mode', true, false],
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
     service_tier: ['#openai_service_tier', 'service_tier', false, false],
     enable_web_search: ['#openai_enable_web_search', 'enable_web_search', true, false],
@@ -529,6 +530,7 @@ export const default_settings = {
     word_replacement_enabled: true,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
+    pro_reasoning_mode: false,
     verbosity: verbosity_levels.auto,
     enable_web_search: false,
     enable_file_search: false,
@@ -2715,7 +2717,7 @@ function getReasoningEffort(settings = null, model = null) {
                 }
 
                 if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)) {
-                    if (/^gpt-5\.(4|5)/.test(model)) {
+                    if (/^gpt-5\.(4|5|6)/.test(model)) {
                         return 'none';
                     }
                     if (/^gpt-5/.test(model)) {
@@ -2895,6 +2897,7 @@ export async function createGenerationParameters(settings, model, type, messages
         'claude_use_adaptive_thinking': Boolean(settings.claude_use_adaptive_thinking),
         'word_replacement_enabled': Boolean(oai_settings.word_replacement_enabled),
         'reasoning_effort': getReasoningEffort(settings, model),
+        'pro_reasoning_mode': Boolean(settings.pro_reasoning_mode),
         'enable_web_search': Boolean(settings.enable_web_search),
         'enable_file_search': Boolean(settings.enable_file_search),
         'enable_code_interpreter': Boolean(settings.enable_code_interpreter),
@@ -7545,6 +7548,11 @@ export function initOpenAI() {
 
     $('#openai_reasoning_effort').on('input', function () {
         oai_settings.reasoning_effort = String($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#openai_pro_reasoning_mode').on('input', function () {
+        oai_settings.pro_reasoning_mode = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

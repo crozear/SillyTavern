@@ -13,6 +13,7 @@ import {
     GEMINI_SAFETY,
     NANOGPT_REASONING_EFFORT_MAP,
     OPENAI_FIXED_REASONING_EFFORT,
+    OPENAI_PRO_REASONING_MODELS,
     OPENAI_REASONING_EFFORT_MAP,
     OPENAI_REASONING_EFFORT_MODELS,
     OPENAI_RESPONSES_API_MODELS,
@@ -3582,8 +3583,9 @@ function convertResponsesContent(content) {
 /**
  * Converts a chat completions request body in-place to the OpenAI Responses API format.
  * @param {any} requestBody The request body to transform
+ * @param {any} originalBody The original request.body from the client (for flags)
  */
-function convertToResponsesApiRequest(requestBody) {
+function convertToResponsesApiRequest(requestBody, originalBody = {}) {
     // messages → input; first developer message → instructions param, rest → system role
     if (requestBody.messages) {
         let firstSystemUsed = false;
@@ -3617,8 +3619,11 @@ function convertToResponsesApiRequest(requestBody) {
     delete requestBody.max_tokens;
 
     // reasoning_effort → reasoning.effort, always request summaries
+    const proMode = Boolean(originalBody.pro_reasoning_mode)
+        && OPENAI_PRO_REASONING_MODELS.test(requestBody.model ?? '');
     requestBody.reasoning = {
         ...(requestBody.reasoning_effort ? { effort: requestBody.reasoning_effort } : {}),
+        ...(proMode ? { mode: 'pro' } : {}),
         summary: 'detailed',
     };
     delete requestBody.reasoning_effort;
@@ -3645,7 +3650,8 @@ function convertToResponsesApiRequest(requestBody) {
     delete requestBody.responses_store;
 
     // Remove unsupported parameters
-    if (!requestBody.reasoning.effort || requestBody.reasoning.effort === 'none') {
+    if (requestBody.reasoning.effort === 'none'
+        || (!requestBody.reasoning.effort && !requestBody.reasoning.mode)) {
         delete requestBody.reasoning;
     } else {
         delete requestBody.temperature;
@@ -4224,7 +4230,7 @@ router.post('/generate', async function (request, response) {
 
         // Transform request body for the OpenAI Responses API
         if (useResponsesApi) {
-            convertToResponsesApiRequest(requestBody);
+            convertToResponsesApiRequest(requestBody, request.body);
             buildResponsesTools(request.body, requestBody);
         }
 

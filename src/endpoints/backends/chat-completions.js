@@ -14,6 +14,7 @@ import {
     NANOGPT_REASONING_EFFORT_MAP,
     OPENAI_FIXED_REASONING_EFFORT,
     OPENAI_PRO_REASONING_MODELS,
+    OPENAI_PROMPT_CACHE_OPTIONS_MODELS,
     OPENAI_REASONING_EFFORT_MAP,
     OPENAI_REASONING_EFFORT_MODELS,
     OPENAI_RESPONSES_API_MODELS,
@@ -3639,6 +3640,14 @@ function convertToResponsesApiRequest(requestBody, originalBody = {}) {
             requestBody.text.verbosity = requestBody.verbosity;
             delete requestBody.verbosity;
         }
+    }
+
+    // Prompt caching (GPT-5.6+): implicit mode is the API default and bills cache writes
+    // at 1.25x input. When the toggle is off, explicit mode with no breakpoints in the
+    // prompt means the request neither reads nor writes the cache.
+    if (originalBody.openai_enable_caching === false
+        && OPENAI_PROMPT_CACHE_OPTIONS_MODELS.test(requestBody.model ?? '')) {
+        requestBody.prompt_cache_options = { mode: 'explicit' };
     }
 
     // Don't store conversations on OpenAI's servers by default; allow opt-in via flag

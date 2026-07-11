@@ -64,6 +64,7 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Frontend handles `response.*` SSE events in sse-stream.js and openai.js
 - `X-Response-Format: responses` header signals frontend to use Responses API parsing
 - Reasoning summary extraction from Responses API output items
+- **Prompt cache toggle** (GPT-5.6+): `openai_enable_caching` UI checkbox (default on). When off, sends `prompt_cache_options: { mode: 'explicit' }` with no breakpoints to disable implicit caching and its 1.25x cache-write surcharge. Model gate: `OPENAI_PROMPT_CACHE_OPTIONS_MODELS` in constants.js
 
 ### 4. Service Tier / Proxy Enhancements
 - **Service tier selector** (flex/default/priority) in UI and request params
@@ -84,31 +85,11 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Group chats: modified `isValidImageUrl` null guard
 - Various `// @ts-ignore` additions for toastr calls
 
-## Commands
-
-```bash
-# Run the server
-npm install
-npm start              # or Start.bat on Windows
-npm run debug          # with Node.js inspector
-
-# Lint (from repo root)
-npm run lint           # check src/**/*.js, public/**/*.js
-npm run lint:fix       # auto-fix
-
-# Tests (separate package in tests/ subdirectory)
-cd tests && npm install
-npm test               # unit (Jest) + e2e (Playwright)
-npm run test:unit      # Jest only
-npm run test:e2e       # Playwright only
-
-# Run a single Jest test file
-node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.json util.test.js
-```
-
 ## Code Style
 
-Enforced by ESLint (`.eslintrc.cjs`). Key rules:
+**Do NOT run lint/eslint to verify changes** — it does not work in Claude Code sessions in this environment despite being installed via npm. The user runs it manually afterwards. Skip any lint verification step.
+
+Key rules:
 - Single quotes, semicolons required, 4-space indentation
 - Trailing commas on multiline (`comma-dangle: always-multiline`)
 - `no-unused-vars` is an error (args exempted)

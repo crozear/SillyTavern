@@ -516,6 +516,12 @@ export const OPENAI_FIXED_REASONING_EFFORT = {
 export const OPENAI_PRO_REASONING_MODELS = /^gpt-5\.6/;
 
 /**
+ * Models that support Responses API prompt cache controls (`prompt_cache_options`).
+ * GPT-5.6 and later model families.
+ */
+export const OPENAI_PROMPT_CACHE_OPTIONS_MODELS = /^gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})/;
+
+/**
  * Models that should use the OpenAI Responses API (/v1/responses) instead of Chat Completions.
  * These are reasoning models that benefit from the richer output format.
  */

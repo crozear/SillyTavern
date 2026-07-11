@@ -2288,6 +2288,15 @@
                                             GPT-5.6+ only: sets <code>reasoning.mode: pro</code> for difficult tasks that need more model work (higher latency and token usage). Ignored on other models.
                                         </div>
                                     </div>
+                                    <div class="range-block" data-source="openai">
+                                        <label for="openai_enable_caching" class="checkbox_label widthFreeExpand">
+                                            <input id="openai_enable_caching" type="checkbox" />
+                                            <span>Prompt Caching</span>
+                                        </label>
+                                        <div class="toggle-description justifyLeft marginBot5">
+                                            GPT-5.6+ only: caching is implicitly on by default with cache writes billed at 1.25x input. Uncheck to send <code>prompt_cache_options.mode: explicit</code> with no breakpoints, disabling caching (and its write surcharge) entirely. Ignored on other models.
+                                        </div>
+                                    </div>
                                     <div class="range-block" data-source="claude">
                                         <label for="claude_use_adaptive_thinking" class="checkbox_label widthFreeExpand">
                                             <input id="claude_use_adaptive_thinking" type="checkbox" />

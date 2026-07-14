@@ -1,0 +1,44 @@
+.vw-status {
+    margin-top: 5px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    border: 1px solid var(--SmartThemeBorderColor);
+    background-color: var(--black30a);
+    word-break: break-word;
+}
+
+.vw-status.vw-status-ok {
+    border-color: var(--active);
+}
+
+.vw-status.vw-status-warn {
+    border-color: var(--warning, #d9822b);
+}
+
+.vw-dialog {
+    text-align: left;
+    max-width: 640px;
+}
+
+.vw-dialog label {
+    display: block;
+    margin-bottom: 2px;
+    font-weight: bold;
+}
+
+.vw-dialog .vw-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+@media (max-width: 500px) {
+    .vw-dialog .vw-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+#video_watch_button .fa-film {
+    color: var(--SmartThemeBodyColor);
+}

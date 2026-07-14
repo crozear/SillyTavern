@@ -1,0 +1,65 @@
+<div class="video-watch-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b><i class="fa-solid fa-film"></i> Video Watch</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <small>
+                Give the LLM a video: it downloads the clip, extracts frames, and pulls a transcript, then
+                drops them into the chat as multimodal input. Needs a vision model with
+                <b>media inlining</b> enabled, plus <code>ffmpeg</code> + <code>yt-dlp</code> on the server.
+            </small>
+
+            <div id="vw_status" class="vw-status">Checking setup…</div>
+            <div class="flex-container flexGap5 marginTop5">
+                <div id="vw_open_dialog" class="menu_button"><i class="fa-solid fa-film"></i> Watch a video…</div>
+                <div id="vw_refresh_status" class="menu_button"><i class="fa-solid fa-rotate"></i> Recheck setup</div>
+            </div>
+
+            <hr>
+
+            <label for="vw_detail">Default detail</label>
+            <select id="vw_detail" class="text_pole">
+                <option value="transcript">transcript — no frames, transcript only</option>
+                <option value="efficient">efficient — fast keyframes (cap 50)</option>
+                <option value="balanced">balanced — scene-aware frames (cap 100)</option>
+                <option value="token-burner">token-burner — scene-aware, uncapped</option>
+            </select>
+
+            <label for="vw_resolution" class="marginTop5">Frame width (px)</label>
+            <input id="vw_resolution" class="text_pole" type="number" min="128" max="2048" step="1">
+
+            <label for="vw_whisper" class="marginTop5">Whisper transcription</label>
+            <select id="vw_whisper" class="text_pole">
+                <option value="auto">auto — prefer Groq, fall back to OpenAI</option>
+                <option value="groq">Groq</option>
+                <option value="openai">OpenAI</option>
+                <option value="none">disabled (frames only if no captions)</option>
+            </select>
+
+            <label class="checkbox_label marginTop5" for="vw_nodedup">
+                <input id="vw_nodedup" type="checkbox">
+                <span>Keep near-duplicate frames</span>
+            </label>
+            <label class="checkbox_label" for="vw_show_transcript">
+                <input id="vw_show_transcript" type="checkbox">
+                <span>Show the transcript text in the chat message</span>
+            </label>
+            <label class="checkbox_label" for="vw_auto_reply">
+                <input id="vw_auto_reply" type="checkbox">
+                <span>Auto-trigger a model reply after watching</span>
+            </label>
+            <label class="checkbox_label" for="vw_auto_detect">
+                <input id="vw_auto_detect" type="checkbox">
+                <span>Offer to watch video URLs I send in chat</span>
+            </label>
+
+            <small class="marginTop5 opacity50p">
+                Tip: <code>/watch &lt;url&gt; &lt;question&gt;</code> runs from the chat bar. Transcription of
+                caption-less videos reuses the <b>OpenAI or Groq key you already saved in SillyTavern</b>
+                (no separate key needed) — or one placed in <code>~/.config/watch/.env</code>.
+            </small>
+        </div>
+    </div>
+</div>

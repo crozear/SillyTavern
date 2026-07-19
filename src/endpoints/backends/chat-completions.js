@@ -1074,7 +1074,7 @@ function createWordReplacementStream(enabled) {
  * @param {string} raw - The full SSE response string
  * @returns {string}
  */
-function formatStreamingResponse(raw) {
+function formatStreamingResponse(raw, responseHeaders = null) {
     let thinking = '';
     let text = '';
     let metaBase = null;
@@ -1110,7 +1110,16 @@ function formatStreamingResponse(raw) {
     if (text) parts.push(`[Response]\n${text}`);
     if (metaBase) {
         const out = finalOutputTokens ?? '?';
-        parts.push(`model: ${metaBase.model} | in: ${metaBase.inputTokens} | out: ${out} | cache_read: ${metaBase.cacheRead} | cache_created: ${metaBase.cacheCreated}`);
+        let meta = `model: ${metaBase.model} | in: ${metaBase.inputTokens} | out: ${out} | cache_read: ${metaBase.cacheRead} | cache_created: ${metaBase.cacheCreated}`;
+        // Anthropic responses carry the org that served the request; the prompt
+        // cache is scoped per org, so a flip here explains any cache_read: 0
+        if (responseHeaders && typeof responseHeaders.get === 'function') {
+            const orgId = responseHeaders.get('anthropic-organization-id');
+            const requestId = responseHeaders.get('request-id');
+            if (orgId) meta += ` | org: ${orgId}`;
+            if (requestId) meta += ` | req: ${requestId}`;
+        }
+        parts.push(meta);
     }
     return parts.length ? parts.join('\n\n') : '(no text content)';
 }
@@ -1155,7 +1164,7 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             });
 
             from.body.on('end', function () {
-                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8')));
+                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8'), from.headers));
                 endResponse();
             });
 
@@ -1176,7 +1185,7 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             });
 
             transformStream.on('end', function () {
-                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8')));
+                console.info('Streaming request finished.\n' + formatStreamingResponse(Buffer.concat(chunks).toString('utf8'), from.headers));
                 endResponse();
             });
 
@@ -1538,7 +1547,9 @@ async function sendClaudeRequest(request, response) {
                 .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
             if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1) {
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: '5m' };
+                // Must match the system/messages TTL: longer-TTL breakpoints have to
+                // precede shorter ones, and tools come first in the cache hierarchy
+                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
             }
         }
         if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
@@ -1722,6 +1733,11 @@ async function sendClaudeRequest(request, response) {
             const generateResponseJson = await generateResponse.json();
             const responseText = generateResponseJson?.content?.[0]?.text || '';
             console.debug('Claude response:', generateResponseJson);
+
+            const usage = generateResponseJson?.usage ?? {};
+            const orgId = generateResponse.headers.get('anthropic-organization-id');
+            const requestId = generateResponse.headers.get('request-id');
+            console.info(`model: ${generateResponseJson?.model} | in: ${usage.input_tokens ?? '?'} | out: ${usage.output_tokens ?? '?'} | cache_read: ${usage.cache_read_input_tokens ?? 0} | cache_created: ${usage.cache_creation_input_tokens ?? 0}${orgId ? ` | org: ${orgId}` : ''}${requestId ? ` | req: ${requestId}` : ''}`);
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };

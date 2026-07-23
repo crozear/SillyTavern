@@ -6539,6 +6539,7 @@ export function isImageInliningSupported() {
         'claude-haiku-4',
         'claude-fable-5',
         'claude-sonnet-5',
+        'claude-opus-5',
         // Cohere
         'c4ai-aya-vision',
         'command-a-vision',
@@ -7032,7 +7033,7 @@ function updateVertexAIServiceAccountStatus(isValid = false, message = '') {
  * @param {number} tokenPrice - The price in tokens for the attached image.
  */
 export function updateClaudeResolutionHint() {
-    const isOpus47 = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5/.test(oai_settings.claude_model);
+    const isOpus47 = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(oai_settings.claude_model);
     const $opusOption = $('#claude_image_resolution option[value="opus"]');
     $opusOption.prop('hidden', !isOpus47);
     if (!isOpus47 && oai_settings.claude_image_resolution === 'opus') {

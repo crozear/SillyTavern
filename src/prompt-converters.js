@@ -1205,8 +1205,8 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
  * @returns {string|null} Effort level for the API, or null to use API default
  */
 export function getClaudeAdaptiveEffort(reasoningEffort, model) {
-    const hasMax = /-4-(6|7|8)|(fable|sonnet)-5/.test(model);
-    const hasXhigh = /opus-4-(7|8)|(fable|sonnet)-5/.test(model);
+    const hasMax = /-4-(6|7|8)|(fable|sonnet|opus)-5/.test(model);
+    const hasXhigh = /opus-4-(7|8)|(fable|sonnet|opus)-5/.test(model);
 
     switch (reasoningEffort) {
         case 'none':

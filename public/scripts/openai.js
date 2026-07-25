@@ -378,6 +378,25 @@ function getClaudeStaticModels() {
 }
 
 /**
+ * Whether the fetched model list already offers a model, counting an alias and
+ * its dated snapshot as the same thing (`claude-opus-4-5` vs
+ * `claude-opus-4-5-20251101`) so the two don't both get listed. Only an
+ * 8-digit date may differ: `claude-opus-4` and `claude-opus-4-1-...` are
+ * genuinely different models, not one pinned form of the other.
+ * @param {string} id Model ID from the static markup
+ * @param {Set<string>} fetchedIds Model IDs returned by the API
+ * @returns {boolean} True if the model is already reachable in the dropdown
+ */
+function isClaudeModelListed(id, fetchedIds) {
+    if (fetchedIds.has(id)) {
+        return true;
+    }
+
+    const isSnapshotOf = (snapshot, alias) => snapshot.startsWith(`${alias}-`) && /^\d{8}$/.test(snapshot.slice(alias.length + 1));
+    return [...fetchedIds].some(fetched => isSnapshotOf(fetched, id) || isSnapshotOf(id, fetched));
+}
+
+/**
  * Per-model guidance shown under the Reasoning Effort dropdown, condensed from
  * Anthropic's recommended-effort docs. Matched most-specific-first; unknown and
  * pre-4.6 models fall back to the manual thinking-budget explanation.
@@ -2722,9 +2741,10 @@ function saveModelList(data) {
                 primaryGroup.append(new Option(staticModels.get(model.id) ?? model.id, model.id));
             });
 
-            // Aliases and older snapshots the key can't see stay reachable rather
-            // than silently vanishing (and taking a saved selection with them).
-            const unlisted = [...staticModels].filter(([id]) => !fetchedIds.has(id));
+            // Models the key can't see stay reachable rather than silently
+            // vanishing (and taking a saved selection with them). An alias whose
+            // dated snapshot came back is already listed, so it isn't repeated.
+            const unlisted = [...staticModels].filter(([id]) => !isClaudeModelListed(id, fetchedIds));
             if (unlisted.length) {
                 const otherGroup = $('<optgroup></optgroup>').attr('label', 'Not listed by the API');
                 unlisted.forEach(([id, label]) => otherGroup.append(new Option(label, id)));

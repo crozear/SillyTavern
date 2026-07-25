@@ -116,10 +116,16 @@ describe('getClaudeAdaptiveEffort', () => {
         // 4.6 never had xhigh; its top tier is named max.
         expect(mod.getClaudeAdaptiveEffort('xhigh', 'claude-opus-4-6')).toBe('max');
         expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-6')).toBe('max');
-        // Fable 5 / Sonnet 5 / Opus 4.8 stop at xhigh.
-        expect(mod.getClaudeAdaptiveEffort('max', 'claude-fable-5')).toBe('xhigh');
-        expect(mod.getClaudeAdaptiveEffort('max', 'claude-sonnet-5')).toBe('xhigh');
-        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-8')).toBe('xhigh');
+        // Opus 4.5 stops at high (no xhigh or max tiers).
+        expect(mod.getClaudeAdaptiveEffort('xhigh', 'claude-opus-4-5')).toBe('high');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-5')).toBe('high');
+    });
+
+    test('4.7+ and 5-series support max', () => {
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-fable-5')).toBe('max');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-sonnet-5')).toBe('max');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-8')).toBe('max');
+        expect(mod.getClaudeAdaptiveEffort('xhigh', 'claude-opus-4-7')).toBe('xhigh');
     });
 
     test('min is treated as low', () => {
@@ -127,8 +133,12 @@ describe('getClaudeAdaptiveEffort', () => {
         expect(mod.getClaudeAdaptiveEffort('minimal', 'claude-opus-5')).toBe('low');
     });
 
+    test('opus-4-5 has effort despite manual thinking', () => {
+        expect(mod.getClaudeAdaptiveEffort('high', 'claude-opus-4-5')).toBe('high');
+    });
+
     test('models without an effort parameter send nothing', () => {
-        expect(mod.getClaudeAdaptiveEffort('high', 'claude-opus-4-5')).toBeNull();
+        expect(mod.getClaudeAdaptiveEffort('high', 'claude-sonnet-4-5')).toBeNull();
         expect(mod.getClaudeAdaptiveEffort('high', 'some-proxied-model')).toBeNull();
     });
 });

@@ -1682,12 +1682,6 @@ function buildClaudeRequestBody(request, apiKey) {
 
             if (caps.thinkingMode === 'adaptive') {
                 requestBody.thinking = { type: 'adaptive' };
-
-                const effort = getClaudeAdaptiveEffort(reasoningEffort, caps);
-                if (effort) {
-                    requestBody.output_config ??= {};
-                    requestBody.output_config.effort = effort;
-                }
             } else {
                 // Pre-4.6: manual extended thinking with an explicit budget.
                 const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream, false);
@@ -1697,6 +1691,14 @@ function buildClaudeRequestBody(request, apiKey) {
                         budget_tokens: budgetTokens,
                     };
                 }
+            }
+
+            // Effort rides along wherever the model supports it — that's every
+            // adaptive model, plus Opus 4.5 next to its manual budget.
+            const effort = getClaudeAdaptiveEffort(reasoningEffort, caps);
+            if (effort) {
+                requestBody.output_config ??= {};
+                requestBody.output_config.effort = effort;
             }
         }
     }

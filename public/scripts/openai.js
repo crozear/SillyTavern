@@ -635,6 +635,7 @@ export const default_settings = {
     max_context_unlocked: false,
     show_external_models: false,
     proxy_password: '',
+    claude_default_proxy: '',
     assistant_prefill: '',
     assistant_impersonation: '',
     use_sysprompt: false,
@@ -6918,6 +6919,40 @@ export function loadProxyPresets(settings) {
     }
     $('#openai_proxy_preset').val(selected_proxy.name);
     setProxyPreset(selected_proxy.name, selected_proxy.url, selected_proxy.password);
+    // Presets load after the initial source change has already fired, so
+    // normalize here too (e.g. app reopened on OpenAI with a proxy selected).
+    syncProxyToSource();
+}
+
+/**
+ * Keeps the proxy preset in lockstep with the chat completion source: only
+ * Claude uses the reverse proxy, so any other source drops to the "None"
+ * preset, and switching back to Claude restores the last proxy used with it.
+ */
+function syncProxyToSource() {
+    const nonePreset = proxies.find(preset => preset.name === 'None');
+
+    if (oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+        const claudeProxy = proxies.find(preset => preset.name === oai_settings.claude_default_proxy);
+        if (claudeProxy && selected_proxy?.name !== claudeProxy.name) {
+            setProxyPreset(claudeProxy.name, claudeProxy.url, claudeProxy.password);
+            $('#openai_proxy_preset').val(claudeProxy.name);
+        }
+    } else if (selected_proxy?.name && selected_proxy.name !== 'None') {
+        oai_settings.claude_default_proxy = selected_proxy.name;
+        if (nonePreset) {
+            setProxyPreset(nonePreset.name, nonePreset.url, nonePreset.password);
+            $('#openai_proxy_preset').val(nonePreset.name);
+        } else {
+            // "None" was deleted/renamed; clear the proxy fields directly.
+            oai_settings.reverse_proxy = '';
+            oai_settings.proxy_password = '';
+            $('#openai_reverse_proxy').val('');
+            $('#openai_proxy_password').val('');
+        }
+    }
+
+    $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
 }
 
 function setProxyPreset(name, url, password) {
@@ -6946,6 +6981,11 @@ function onProxyPresetChange() {
 
     if (selectedPreset) {
         setProxyPreset(selectedPreset.name, selectedPreset.url, selectedPreset.password);
+        // A manual pick while on Claude is the new Claude proxy — including an
+        // explicit "None", which stops the auto-reselect on future switches.
+        if (oai_settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+            oai_settings.claude_default_proxy = selectedPreset.name === 'None' ? '' : selectedPreset.name;
+        }
     } else {
         console.error(t`Proxy preset '${value}' not found in proxies array.`);
     }
@@ -7446,6 +7486,7 @@ export function initOpenAI() {
         cancelStatusCheck('Chat Completion source changed');
         model_list = [];
         oai_settings.chat_completion_source = String($(this).find(':selected').val());
+        syncProxyToSource();
         toggleChatCompletionForms();
         saveSettingsDebounced();
         reconnectOpenAi();

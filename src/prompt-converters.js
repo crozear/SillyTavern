@@ -1217,7 +1217,8 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
 }
 
 /**
- * Get the output_config.effort value for Claude adaptive thinking models.
+ * Get the output_config.effort value for Claude models that accept the effort
+ * parameter (the adaptive 4.6+ generation, plus Opus 4.5 alongside its budget).
  * Resolves positionally against the model's own effort ladder, so a tier the
  * model doesn't have (e.g. `xhigh` on Opus 4.6) degrades to that model's ceiling.
  * @param {string} reasoningEffort Reasoning effort setting

@@ -595,7 +595,7 @@ export const CLAUDE_MODEL_CAPABILITIES = [
             canDisableThinking: 'never',
             supportsPrefill: false,
             samplingMode: 'none',
-            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
             thinkingDisplay: true,
             supportsTaskBudget: true,
             supportsWebSearch: true,
@@ -633,7 +633,7 @@ export const CLAUDE_MODEL_CAPABILITIES = [
             canDisableThinking: 'always',
             supportsPrefill: false,
             samplingMode: 'none',
-            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
             thinkingDisplay: true,
             supportsTaskBudget: true,
             supportsWebSearch: true,
@@ -652,7 +652,7 @@ export const CLAUDE_MODEL_CAPABILITIES = [
             canDisableThinking: 'always',
             supportsPrefill: false,
             samplingMode: 'none',
-            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
             thinkingDisplay: true,
             supportsTaskBudget: true,
             supportsWebSearch: true,
@@ -683,8 +683,10 @@ export const CLAUDE_MODEL_CAPABILITIES = [
         caps: { supportsWebSearch: true, contextWindow: 1000000, maxOutput: 64000 },
     },
     {
+        // Opus 4.5: manual thinking, but the only pre-4.6 model with the effort
+        // parameter (sent alongside budget_tokens). No xhigh/max tiers.
         pattern: /^claude-opus-4-5/,
-        caps: { supportsWebSearch: true, maxOutput: 64000 },
+        caps: { effortLevels: ['low', 'medium', 'high'], supportsWebSearch: true, maxOutput: 64000 },
     },
     {
         pattern: /^claude-haiku-4-5/,

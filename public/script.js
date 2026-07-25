@@ -112,7 +112,9 @@ import {
     selected_proxy,
     initOpenAI,
     getLastJailbreakInstructions,
+    isClaudeFlexBatchEligible,
 } from './scripts/openai.js';
+import { initClaudeBatchTracker, startClaudeBatch } from './scripts/claude-batch.js';
 
 import {
     generateNovelWithStreaming,
@@ -810,6 +812,7 @@ async function firstLoadInit() {
     initSwipePicker();
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
+    initClaudeBatchTracker();
     await eventSource.emit(event_types.APP_INITIALIZED);
     await initLoaderHandle.hide();
     await fixViewport();
@@ -3487,6 +3490,10 @@ export function isStreamingEnabled() {
     return (
         (main_api == 'openai' &&
             oai_settings.stream_openai &&
+            // Claude Flex goes through the batch API, which forbids streaming. Keep this
+            // in sync with the `stream` flag in createGenerationParameters, so a batch
+            // that falls back to a normal request doesn't try to stream a JSON response.
+            !isClaudeFlexBatchEligible() &&
             !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && ['o1-2024-12-17', 'o1'].includes(oai_settings.openai_model))
         )
         || (main_api == 'kobold' && kai_settings.streaming_kobold && kai_flags.can_use_streaming)
@@ -5382,6 +5389,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         console.debug(`pushed prompt bits to itemizedPrompts array. Length is now: ${itemizedPrompts.length}`);
 
+        // Claude "Flex" tier is served by the Message Batches API: submit and detach,
+        // so the user can keep working while the batch cooks. Falls through to the
+        // normal request path if the batch isn't eligible or the submission fails.
+        if (main_api === 'openai' && !isImpersonate && !isContinue && type !== 'quiet' && type !== 'swipe') {
+            const batchOutcome = await startClaudeBatch(type, generate_data);
+            if (batchOutcome === 'queued') {
+                return { claudeBatchQueued: true };
+            }
+        }
+
         if (isStreamingEnabled() && type !== 'quiet') {
             continue_mag = promptReasoning.removePrefix(continue_mag);
             streamingProcessor = new StreamingProcessor(type, force_name2, generation_started, continue_mag, promptReasoning);
@@ -5463,6 +5480,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         if (data?.fromStream) {
             return data;
+        }
+
+        // A Claude Flex batch was queued: it delivers itself later, so release the UI now.
+        if (data?.claudeBatchQueued) {
+            unblockGeneration(type);
+            streamingProcessor = null;
+            return;
         }
 
         let messageChunk = '';

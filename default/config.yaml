@@ -376,6 +376,18 @@ claude:
   # Disable to enforce legacy thinking mode (with thinking budget).
   # https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
   enableAdaptiveThinking: false
+  # "Flex" service tier = Message Batches API (asynchronous, 50% cost).
+  # When enabled and the Claude service tier is set to "flex" with an sk-ant API
+  # key, a single generation is submitted as a batch of one and polled until it
+  # completes (most finish < 1h, up to 24h). https://platform.claude.com/docs/en/build-with-claude/batch-processing
+  batchFlex:
+    # Master switch. When false, "flex" behaves like a normal synchronous request.
+    enabled: true
+    # How often the frontend polls a pending batch, in milliseconds.
+    pollIntervalMs: 15000
+    # Give up waiting after this many minutes (the batch keeps running on
+    # Anthropic's side and can still be retrieved later).
+    maxWaitMinutes: 90
 # -- GOOGLE GEMINI API CONFIGURATION --
 gemini:
   # API endpoint version ("v1beta" or "v1alpha")

@@ -1,0 +1,442 @@
+import {
+    chat,
+    cleanUpMessage,
+    event_types,
+    eventSource,
+    extractMessageFromData,
+    getCurrentChatId,
+    getRequestHeaders,
+    name2,
+    saveChatConditional,
+    saveReply,
+    updateMessageBlock,
+} from '../script.js';
+import { extractReasoningFromData } from './reasoning.js';
+import { getClaudeBatchRequestExtras, isClaudeFlexBatchEligible } from './openai.js';
+import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
+import { power_user } from './power-user.js';
+import { t } from './i18n.js';
+
+const API_BASE = '/api/backends/chat-completions/claude-batch';
+
+/** Text shown in the chat while the batch is cooking. */
+const PLACEHOLDER = '*⏳ Waiting for a Claude Flex batch reply…*';
+
+/** Generation types that always need the synchronous path: they either edit an
+ * existing message in place (swipe/continue) or feed their result straight back
+ * into the UI/pipeline (impersonate/quiet), neither of which survives detaching. */
+const NON_BATCHABLE_TYPES = new Set(['swipe', 'continue', 'impersonate', 'quiet']);
+
+/** Active jobs, keyed by jobId. @type {Map<string, BatchJob>} */
+const activeJobs = new Map();
+
+let pollIntervalMs = 20000;
+let maxWaitMinutes = 90;
+
+/**
+ * @typedef {object} BatchJob
+ * @property {string} jobId Server-side job identifier
+ * @property {string} batchId Anthropic batch identifier
+ * @property {string} customId custom_id of the single request in the batch
+ * @property {string|null} chatId Chat the reply belongs to
+ * @property {string|null} characterName Character name for toasts
+ * @property {number} createdAt Timestamp of submission
+ * @property {number} [timer] setInterval handle
+ * @property {object} [reply] Completed reply payload, awaiting delivery
+ * @property {boolean} [delivering] Guard against re-entrant delivery
+ * @property {boolean} [polling] Guard against overlapping polls
+ * @property {boolean} [notified] Whether the "ready elsewhere" toast has been shown
+ */
+
+/**
+ * Credentials/settings the backend needs on every batch call. `generate_data` is
+ * long gone by the time a resumed poller runs, so these are re-read from settings.
+ * @returns {object}
+ */
+function batchExtras() {
+    return getClaudeBatchRequestExtras();
+}
+
+/**
+ * @param {string} path Endpoint path under the batch API base
+ * @param {object} body Request payload
+ * @returns {Promise<Response>}
+ */
+function postBatch(path, body) {
+    return fetch(`${API_BASE}/${path}`, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ ...batchExtras(), ...body }),
+    });
+}
+
+/**
+ * Submits a generation as a Claude batch and returns immediately, leaving a
+ * placeholder message in the chat that gets filled in when the batch finishes.
+ * @param {string} type Generation type
+ * @param {object} generateData Fully-built generation payload
+ * @returns {Promise<'queued'|'ineligible'>} 'ineligible' means: run the normal request instead
+ */
+export async function startClaudeBatch(type, generateData) {
+    // Eligibility (source/tier/key/group) lives in isClaudeFlexBatchEligible so that
+    // this check, the `stream` flag, and isStreamingEnabled can never disagree.
+    if (!isClaudeFlexBatchEligible() || NON_BATCHABLE_TYPES.has(type)) {
+        return 'ineligible';
+    }
+
+    const chatId = getCurrentChatId();
+    let response;
+
+    try {
+        response = await fetch(`${API_BASE}/submit`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...generateData,
+                stream: false,
+                batch_chat_id: chatId ?? null,
+                batch_character_name: name2,
+            }),
+        });
+    } catch (error) {
+        console.error('Claude batch submit failed, falling back to a normal request.', error);
+        return 'ineligible';
+    }
+
+    if (response.status === 409) {
+        // No sk-ant key — the discount wouldn't apply, so don't wait for nothing.
+        console.info('Claude batch is not eligible, falling back to a normal request.');
+        return 'ineligible';
+    }
+
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        console.error('Claude batch submit error, falling back to a normal request.', response.status, detail);
+        toastr.warning(t`Batch submission failed — sending a normal request instead.`, t`Claude Flex`);
+        return 'ineligible';
+    }
+
+    const data = await response.json();
+    applyPollSettings(data);
+
+    // The placeholder is saved to disk right away, so it survives navigating away.
+    // `fromStreaming` suppresses the MESSAGE_RECEIVED/CHARACTER_MESSAGE_RENDERED
+    // emits so extensions (TTS, translate, …) don't act on the placeholder text —
+    // they're emitted once for real when the reply is delivered.
+    await saveReply({ type: 'normal', getMessage: PLACEHOLDER, fromStreaming: true });
+    const message = chat[chat.length - 1];
+    message.extra = message.extra ?? {};
+    message.extra.claude_batch_job_id = data.jobId;
+    message.extra.claude_batch_pending = true;
+    await saveChatConditional();
+
+    track({
+        jobId: data.jobId,
+        batchId: data.batchId,
+        customId: data.customId,
+        chatId: chatId ?? null,
+        characterName: name2,
+        createdAt: Date.now(),
+    });
+
+    toastr.info(t`Reply will arrive here when it's done — keep chatting meanwhile.`, t`Claude Flex batch queued`, { timeOut: 8000 });
+    return 'queued';
+}
+
+/**
+ * Reads poll cadence sent by the backend (sourced from config.yaml).
+ * @param {object} data Response payload from submit/list
+ */
+function applyPollSettings(data) {
+    if (Number.isFinite(data?.pollIntervalMs)) {
+        pollIntervalMs = Math.max(5000, data.pollIntervalMs);
+    }
+    if (Number.isFinite(data?.maxWaitMinutes)) {
+        maxWaitMinutes = Math.max(1, data.maxWaitMinutes);
+    }
+}
+
+/**
+ * Registers a job and starts its poller.
+ * @param {BatchJob} job Job to track
+ */
+function track(job) {
+    if (activeJobs.has(job.jobId)) {
+        return;
+    }
+    activeJobs.set(job.jobId, job);
+    job.timer = setInterval(() => pollJob(job.jobId), pollIntervalMs);
+    // Don't make the user wait a full interval for the first check on resume.
+    setTimeout(() => pollJob(job.jobId), 2000);
+}
+
+/**
+ * Stops polling a job and forgets it locally.
+ * @param {string} jobId Job identifier
+ */
+function untrack(jobId) {
+    const job = activeJobs.get(jobId);
+    if (job?.timer) {
+        clearInterval(job.timer);
+    }
+    activeJobs.delete(jobId);
+}
+
+/**
+ * Tells the server the job is done with, so it stops being resumed on reload.
+ * @param {string} jobId Job identifier
+ */
+async function ackJob(jobId) {
+    try {
+        await postBatch('ack', { jobId });
+    } catch (error) {
+        console.error('Failed to acknowledge Claude batch job.', error);
+    }
+}
+
+/**
+ * Checks a job's status and, once it ends, fetches and delivers its result.
+ * @param {string} jobId Job identifier
+ * @returns {Promise<void>}
+ */
+async function pollJob(jobId) {
+    const job = activeJobs.get(jobId);
+    if (!job || job.delivering || job.polling) {
+        return;
+    }
+
+    if (job.reply) {
+        await deliver(job);
+        return;
+    }
+
+    if (Date.now() - job.createdAt > maxWaitMinutes * 60 * 1000) {
+        // Anthropic allows up to 24h, so the batch may well still be running.
+        // Stop nagging the API but keep the job on the server: reloading resumes it.
+        untrack(jobId);
+        toastr.warning(
+            t`Still not done after ${String(maxWaitMinutes)} minutes — no longer polling. Reload SillyTavern to resume waiting.`,
+            t`Claude Flex batch`,
+            { timeOut: 20000 },
+        );
+        return;
+    }
+
+    job.polling = true;
+    try {
+        const response = await postBatch('status', { jobId, batchId: job.batchId });
+        if (!response.ok) {
+            console.warn('Claude batch status check failed.', response.status);
+            return;
+        }
+
+        const status = await response.json();
+        if (status?.processing_status !== 'ended') {
+            return;
+        }
+
+        const resultResponse = await postBatch('result', { jobId, batchId: job.batchId, customId: job.customId });
+        if (!resultResponse.ok) {
+            console.warn('Claude batch result fetch failed.', resultResponse.status);
+            return;
+        }
+
+        const result = await resultResponse.json();
+        if (result?.resultType !== 'succeeded' || !result?.reply) {
+            untrack(jobId);
+            await failJob(job, t`Batch ${result?.resultType ?? 'failed'}: no reply was produced.`);
+            return;
+        }
+
+        untrack(jobId);
+        job.reply = result.reply;
+        await deliver(job);
+    } catch (error) {
+        console.error('Claude batch poll error.', error);
+    } finally {
+        job.polling = false;
+    }
+}
+
+/**
+ * Finds the placeholder message for a job in the currently loaded chat.
+ * @param {string} jobId Job identifier
+ * @returns {number} Message index, or -1 if not found
+ */
+function findPlaceholderIndex(jobId) {
+    return chat.findIndex(message => message?.extra?.claude_batch_job_id === jobId);
+}
+
+/**
+ * Writes text into a job's placeholder message, or appends it if the placeholder
+ * is gone (deleted by the user, most likely).
+ * @param {BatchJob} job Job being delivered
+ * @param {string} text Message text
+ * @param {string} reasoning Reasoning text
+ * @returns {Promise<boolean>} Whether the message was written
+ */
+async function writeIntoChat(job, text, reasoning) {
+    const index = findPlaceholderIndex(job.jobId);
+
+    if (power_user.trim_spaces) {
+        text = text.trim();
+    }
+
+    if (index === -1) {
+        await saveReply({ type: 'normal', getMessage: text, reasoning });
+        await saveChatConditional();
+        return true;
+    }
+
+    const message = chat[index];
+    message.mes = text;
+    message.extra = message.extra ?? {};
+    message.extra.reasoning = reasoning || '';
+    delete message.extra.claude_batch_pending;
+    delete message.extra.claude_batch_job_id;
+    message.gen_finished = new Date();
+
+    if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
+        message.swipes[message.swipe_id] = text;
+        if (Array.isArray(message.swipe_info) && message.swipe_info[message.swipe_id]) {
+            message.swipe_info[message.swipe_id].extra = structuredClone(message.extra);
+        }
+    }
+
+    updateMessageBlock(index, message);
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, index, 'normal');
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, index, 'normal');
+    await saveChatConditional();
+    return true;
+}
+
+/**
+ * Delivers a completed job into its origin chat. If that chat isn't open, the job
+ * is held until the user opens it — the on-disk placeholder keeps its place.
+ * @param {BatchJob} job Job to deliver
+ * @returns {Promise<void>}
+ */
+async function deliver(job) {
+    const chatName = job.characterName || t`another chat`;
+
+    if (job.chatId && getCurrentChatId() !== job.chatId) {
+        // Hold it: park the job so CHAT_CHANGED can deliver it later.
+        if (!activeJobs.has(job.jobId)) {
+            activeJobs.set(job.jobId, job);
+        }
+        if (!job.notified) {
+            job.notified = true;
+            toastr.success(t`Flex reply is ready in ${chatName}. Open that chat to see it.`, t`Claude Flex batch`, { timeOut: 15000 });
+        }
+        return;
+    }
+
+    job.delivering = true;
+    try {
+        // Same post-processing the synchronous path applies in Generate's onSuccess.
+        const text = cleanUpMessage({
+            getMessage: extractMessageFromData(job.reply, 'openai') || '',
+            isImpersonate: false,
+            isContinue: false,
+            displayIncompleteSentences: false,
+        });
+        let reasoning = getRegexedString(extractReasoningFromData(job.reply, { mainApi: 'openai', chatCompletionSource: 'claude' }) || '', regex_placement.REASONING);
+        if (power_user.trim_spaces) {
+            reasoning = reasoning.trim();
+        }
+        await writeIntoChat(job, text, reasoning);
+        toastr.success(t`Flex reply delivered.`, t`Claude Flex batch`, { timeOut: 6000 });
+    } catch (error) {
+        console.error('Failed to deliver Claude batch reply.', error);
+    } finally {
+        job.delivering = false;
+        untrack(job.jobId);
+        await ackJob(job.jobId);
+    }
+}
+
+/**
+ * Replaces a job's placeholder with an error note.
+ * @param {BatchJob} job Job that failed
+ * @param {string} reason Human-readable failure reason
+ * @returns {Promise<void>}
+ */
+async function failJob(job, reason) {
+    toastr.error(reason, t`Claude Flex batch`, { timeOut: 15000 });
+
+    if (!job.chatId || getCurrentChatId() === job.chatId) {
+        const index = findPlaceholderIndex(job.jobId);
+        if (index !== -1) {
+            chat[index].mes = `*⚠️ ${reason}*`;
+            delete chat[index].extra.claude_batch_pending;
+            delete chat[index].extra.claude_batch_job_id;
+            updateMessageBlock(index, chat[index]);
+            await saveChatConditional();
+        }
+    }
+
+    await ackJob(job.jobId);
+}
+
+/**
+ * Restores pending batch jobs after a page reload or server restart, and hooks up
+ * deferred delivery for jobs whose origin chat isn't currently open.
+ * @returns {Promise<void>}
+ */
+export async function initClaudeBatchTracker() {
+    eventSource.on(event_types.CHAT_CHANGED, async () => {
+        const currentChatId = getCurrentChatId();
+        for (const job of [...activeJobs.values()]) {
+            if (job.reply && job.chatId === currentChatId) {
+                await deliver(job);
+            }
+        }
+    });
+
+    try {
+        const response = await fetch(`${API_BASE}/list`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        applyPollSettings(data);
+
+        for (const stored of data?.jobs ?? []) {
+            if (stored.status === 'ready' && stored.resultReply) {
+                // Finished while ST was down — deliver as soon as we can.
+                const job = { ...stored, reply: stored.resultReply };
+                activeJobs.set(job.jobId, job);
+                await deliver(job);
+                continue;
+            }
+
+            track({
+                jobId: stored.jobId,
+                batchId: stored.batchId,
+                customId: stored.customId,
+                chatId: stored.chatId ?? null,
+                characterName: stored.characterName ?? null,
+                createdAt: stored.createdAt ?? Date.now(),
+            });
+        }
+
+        if (activeJobs.size) {
+            console.info(`Resumed ${activeJobs.size} Claude batch job(s).`);
+        }
+    } catch (error) {
+        console.error('Failed to restore Claude batch jobs.', error);
+    }
+}
+
+/**
+ * Whether any batch job is currently pending. Used for UI affordances.
+ * @returns {boolean}
+ */
+export function hasPendingClaudeBatches() {
+    return activeJobs.size > 0;
+}

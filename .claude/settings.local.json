@@ -70,13 +70,13 @@
   },
   "enabledPlugins": {
     "frontend-design@claude-plugins-official": false,
-    "context7@claude-plugins-official": false,
+    "context7@claude-plugins-official": true,
     "code-review@claude-plugins-official": false,
     "github@claude-plugins-official": false,
     "feature-dev@claude-plugins-official": false,
     "code-simplifier@claude-plugins-official": false,
     "superpowers@claude-plugins-official": false,
-    "typescript-lsp@claude-plugins-official": false
+    "typescript-lsp@claude-plugins-official": true
   },
   "outputStyle": "default",
   "prefersReducedMotion": true,

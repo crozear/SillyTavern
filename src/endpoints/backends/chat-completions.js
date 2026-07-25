@@ -1,10 +1,13 @@
 /* eslint-disable dot-notation */
 import process from 'node:process';
 import util from 'node:util';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Transform } from 'node:stream';
 import express from 'express';
 import fetch from 'node-fetch';
 import urlJoin from 'url-join';
+import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import {
     AIMLAPI_HEADERS,
@@ -1482,11 +1485,198 @@ async function consumeAndForwardClaudeStream(fetchResponse, expressResponse, wor
  * @param {express.Request} request Express request
  * @param {express.Response} response Express response
  */
+/**
+ * Builds the Claude Messages API request body and fetch headers from an incoming
+ * request. Shared by the synchronous sendClaudeRequest path and the async batch
+ * submit endpoint so both paths produce byte-identical request shapes.
+ * @param {import('express').Request} request Express request
+ * @param {string} apiKey Resolved API key (or proxy password) for the x-api-key header
+ * @returns {{ requestBody: any, fetchHeaders: Record<string, string> }}
+ */
+function buildClaudeRequestBody(request, apiKey) {
+    const { enableSystemPromptCache, cachingAtDepth, ttl: cacheTTL } = resolveClaudeCachingConfig(request);
+    const additionalHeaders = {};
+    const betaHeaders = ['output-300k-2026-03-24'];
+    const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
+    const useSystemPrompt = Boolean(request.body.use_sysprompt);
+    const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
+    const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
+    const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
+    const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && Boolean(request.body.enable_web_search);
+    const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
+    const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
+    const noSamplingModel = /^claude-(opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
+    let fixThinkingPrefill = false;
+    // Add custom stop sequences
+    const stopSequences = [];
+    if (Array.isArray(request.body.stop)) {
+        stopSequences.push(...request.body.stop);
+    }
+
+    const requestBody = {
+        /** @type {any} */ system: [],
+        messages: convertedPrompt.messages,
+        model: request.body.model,
+        max_tokens: request.body.max_tokens,
+        stop_sequences: stopSequences,
+        temperature: request.body.temperature,
+        top_p: request.body.top_p,
+        top_k: request.body.top_k,
+        stream: request.body.stream,
+    };
+    if (useSystemPrompt) {
+        if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
+            convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+        }
+
+        requestBody.system = convertedPrompt.systemPrompt;
+    } else {
+        delete requestBody.system;
+    }
+    if (useTools) {
+        betaHeaders.push('tools-2024-05-16');
+        requestBody.tool_choice = { type: request.body.tool_choice };
+        requestBody.tools = request.body.tools
+            .filter(tool => tool.type === 'function')
+            .map(tool => tool.function)
+            .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
+
+        if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1) {
+            // Must match the system/messages TTL: longer-TTL breakpoints have to
+            // precede shorter ones, and tools come first in the cache hierarchy
+            requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+        }
+    }
+    if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
+            delete requestBody.top_k;
+            delete requestBody.temperature;
+            delete requestBody.top_p;
+    }
+    // Structured output is a forced tool
+    if (request.body.json_schema) {
+        const jsonTool = {
+            name: request.body.json_schema.name,
+            description: request.body.json_schema.description || 'Well-formed JSON object',
+            input_schema: request.body.json_schema.value,
+        };
+        requestBody.tools = [...(requestBody.tools || []), jsonTool];
+        requestBody.tool_choice = { type: 'tool', name: request.body.json_schema.name };
+    }
+
+    if (useWebSearch) {
+        const webSearchTool = [{
+            'type': 'web_search_20250305',
+            'name': 'web_search',
+        }];
+        requestBody.tools = [...webSearchTool, ...(requestBody.tools || [])];
+    }
+
+    if (cachingAtDepth !== -1) {
+        cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
+    }
+
+    if (enableSystemPromptCache || cachingAtDepth !== -1) {
+        betaHeaders.push('prompt-caching-2024-07-31');
+        betaHeaders.push('extended-cache-ttl-2025-04-11');
+    }
+
+    if (isLimitedSampling) {
+        if (requestBody.temperature < 1) {
+            delete requestBody.top_p;
+        } else {
+            delete requestBody.temperature;
+        }
+    }
+
+    if (noSamplingModel) {
+        delete requestBody.temperature;
+        delete requestBody.top_p;
+        delete requestBody.top_k;
+    }
+
+    const reasoningEffort = request.body.reasoning_effort;
+    const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
+
+    if (useThinking && !isThinkingDisabled) {
+        // No prefill when thinking
+        fixThinkingPrefill = true;
+        const minThinkTokens = 1024;
+        if (requestBody.max_tokens <= minThinkTokens) {
+            const newValue = requestBody.max_tokens + minThinkTokens;
+            console.warn(color.yellow(`Claude thinking requires a minimum of ${minThinkTokens} response tokens.`));
+            console.info(color.blue(`Increasing response length to ${newValue}.`));
+            requestBody.max_tokens = newValue;
+        }
+
+        if (isAdaptiveThinking) {
+            // Opus/Sonnet 4.6+: use adaptive thinking
+            requestBody.thinking = { type: 'adaptive' };
+
+            const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);
+            if (effort) {
+                requestBody.output_config ??= {};
+                requestBody.output_config.effort = effort;
+            }
+        }
+
+        if (/^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled) {
+            const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
+            requestBody.output_config ??= {};
+            requestBody.output_config.task_budget = { type: 'tokens', total };
+            betaHeaders.push('task-budgets-2026-03-13');
+        }
+
+        if (!isAdaptiveThinking) {
+            // Older models: use enabled thinking with budget_tokens
+            const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
+            if (Number.isInteger(budgetTokens)) {
+                requestBody.thinking = {
+                    type: 'enabled',
+                    budget_tokens: budgetTokens,
+                };
+            }
+        }
+
+        // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
+        delete requestBody.temperature;
+        delete requestBody.top_k;
+
+        if (requestBody.top_p < 0.95) {
+            delete requestBody.top_p;
+        }
+    }
+
+    if ((fixThinkingPrefill || noPrefillModel) && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {
+        convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
+    }
+
+
+    if (betaHeaders.length) {
+        additionalHeaders['anthropic-beta'] = betaHeaders.join(',');
+    }
+
+    if (request.body.top_p === 1)
+        delete requestBody.top_p;
+
+    if (request.body.temperature === 1)
+        delete requestBody.temperature;
+
+    console.debug('Claude request:', requestBody);
+
+    const fetchHeaders = {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': apiKey,
+        ...additionalHeaders,
+    };
+
+    return { requestBody, fetchHeaders };
+}
+
 async function sendClaudeRequest(request, response) {
     const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
     const apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
     const divider = '-'.repeat(process.stdout.columns);
-    const { enableSystemPromptCache, cachingAtDepth, ttl: cacheTTL } = resolveClaudeCachingConfig(request);
     const wordReplacementsEnabled = getWordReplacementEnabled(request);
 
     if (!apiKey) {
@@ -1500,180 +1690,8 @@ async function sendClaudeRequest(request, response) {
         request.socket.on('close', function () {
             controller.abort();
         });
-        const additionalHeaders = {};
-        const betaHeaders = ['output-300k-2026-03-24'];
-        const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
-        const useSystemPrompt = Boolean(request.body.use_sysprompt);
-        const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-        const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-        const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
-        const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-        const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-        const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-        const noSamplingModel = /^claude-(opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-        let fixThinkingPrefill = false;
-        // Add custom stop sequences
-        const stopSequences = [];
-        if (Array.isArray(request.body.stop)) {
-            stopSequences.push(...request.body.stop);
-        }
 
-        const requestBody = {
-            /** @type {any} */ system: [],
-            messages: convertedPrompt.messages,
-            model: request.body.model,
-            max_tokens: request.body.max_tokens,
-            stop_sequences: stopSequences,
-            temperature: request.body.temperature,
-            top_p: request.body.top_p,
-            top_k: request.body.top_k,
-            stream: request.body.stream,
-        };
-        if (useSystemPrompt) {
-            if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-                convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
-            }
-
-            requestBody.system = convertedPrompt.systemPrompt;
-        } else {
-            delete requestBody.system;
-        }
-        if (useTools) {
-            betaHeaders.push('tools-2024-05-16');
-            requestBody.tool_choice = { type: request.body.tool_choice };
-            requestBody.tools = request.body.tools
-                .filter(tool => tool.type === 'function')
-                .map(tool => tool.function)
-                .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
-
-            if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1) {
-                // Must match the system/messages TTL: longer-TTL breakpoints have to
-                // precede shorter ones, and tools come first in the cache hierarchy
-                requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
-            }
-        }
-        if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
-                delete requestBody.top_k;
-                delete requestBody.temperature;
-                delete requestBody.top_p;
-        }
-        // Structured output is a forced tool
-        if (request.body.json_schema) {
-            const jsonTool = {
-                name: request.body.json_schema.name,
-                description: request.body.json_schema.description || 'Well-formed JSON object',
-                input_schema: request.body.json_schema.value,
-            };
-            requestBody.tools = [...(requestBody.tools || []), jsonTool];
-            requestBody.tool_choice = { type: 'tool', name: request.body.json_schema.name };
-        }
-
-        if (useWebSearch) {
-            const webSearchTool = [{
-                'type': 'web_search_20250305',
-                'name': 'web_search',
-            }];
-            requestBody.tools = [...webSearchTool, ...(requestBody.tools || [])];
-        }
-
-        if (cachingAtDepth !== -1) {
-            cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
-        }
-
-        if (enableSystemPromptCache || cachingAtDepth !== -1) {
-            betaHeaders.push('prompt-caching-2024-07-31');
-            betaHeaders.push('extended-cache-ttl-2025-04-11');
-        }
-
-        if (isLimitedSampling) {
-            if (requestBody.temperature < 1) {
-                delete requestBody.top_p;
-            } else {
-                delete requestBody.temperature;
-            }
-        }
-
-        if (noSamplingModel) {
-            delete requestBody.temperature;
-            delete requestBody.top_p;
-            delete requestBody.top_k;
-        }
-
-        const reasoningEffort = request.body.reasoning_effort;
-        const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
-
-        if (useThinking && !isThinkingDisabled) {
-            // No prefill when thinking
-            fixThinkingPrefill = true;
-            const minThinkTokens = 1024;
-            if (requestBody.max_tokens <= minThinkTokens) {
-                const newValue = requestBody.max_tokens + minThinkTokens;
-                console.warn(color.yellow(`Claude thinking requires a minimum of ${minThinkTokens} response tokens.`));
-                console.info(color.blue(`Increasing response length to ${newValue}.`));
-                requestBody.max_tokens = newValue;
-            }
-
-            if (isAdaptiveThinking) {
-                // Opus/Sonnet 4.6+: use adaptive thinking
-                requestBody.thinking = { type: 'adaptive' };
-
-                const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);
-                if (effort) {
-                    requestBody.output_config ??= {};
-                    requestBody.output_config.effort = effort;
-                }
-            }
-
-            if (/^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled) {
-                const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
-                requestBody.output_config ??= {};
-                requestBody.output_config.task_budget = { type: 'tokens', total };
-                betaHeaders.push('task-budgets-2026-03-13');
-            }
-
-            if (!isAdaptiveThinking) {
-                // Older models: use enabled thinking with budget_tokens
-                const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
-                if (Number.isInteger(budgetTokens)) {
-                    requestBody.thinking = {
-                        type: 'enabled',
-                        budget_tokens: budgetTokens,
-                    };
-                }
-            }
-
-            // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
-            delete requestBody.temperature;
-            delete requestBody.top_k;
-
-            if (requestBody.top_p < 0.95) {
-                delete requestBody.top_p;
-            }
-        }
-
-        if ((fixThinkingPrefill || noPrefillModel) && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {
-            convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
-        }
-
-
-        if (betaHeaders.length) {
-            additionalHeaders['anthropic-beta'] = betaHeaders.join(',');
-        }
-
-        if (request.body.top_p === 1)
-            delete requestBody.top_p;
-
-        if (request.body.temperature === 1)
-            delete requestBody.temperature;
-
-        console.debug('Claude request:', requestBody);
-
-        const fetchHeaders = {
-            'Content-Type': 'application/json',
-            'anthropic-version': '2023-06-01',
-            'x-api-key': apiKey,
-            ...additionalHeaders,
-        };
+        const { requestBody, fetchHeaders } = buildClaudeRequestBody(request, apiKey);
 
         const taskBudgetEnabled = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled;
         const useAgenticLoop = taskBudgetEnabled && (useTools || useWebSearch);
@@ -3476,6 +3494,243 @@ router.post('/word-replacements', function (request, response) {
     const value = request.body?.value;
     const processed = enforceWordReplacementsOnResponse(value, enabled);
     return response.send({ value: processed });
+});
+
+// ---------------------------------------------------------------------------
+// Claude Message Batches ("Flex" tier) — asynchronous, 50%-cost generation.
+// A single message generation is submitted as a batch of one, polled by the
+// frontend, and its reply is delivered back into the origin chat when ready.
+// Jobs are persisted per-user so a page reload / server restart can resume.
+// ---------------------------------------------------------------------------
+
+function getClaudeBatchStorePath(directories) {
+    return path.join(directories.root, 'claude-batches.json');
+}
+
+function readClaudeBatchJobs(directories) {
+    try {
+        const storePath = getClaudeBatchStorePath(directories);
+        if (!fs.existsSync(storePath)) return [];
+        const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.error('Failed to read claude-batches.json:', error);
+        return [];
+    }
+}
+
+function writeClaudeBatchJobs(directories, jobs) {
+    try {
+        writeFileAtomicSync(getClaudeBatchStorePath(directories), JSON.stringify(jobs, null, 2), 'utf8');
+    } catch (error) {
+        console.error('Failed to write claude-batches.json:', error);
+    }
+}
+
+function addClaudeBatchJob(directories, job) {
+    const jobs = readClaudeBatchJobs(directories);
+    jobs.push(job);
+    writeClaudeBatchJobs(directories, jobs);
+}
+
+function updateClaudeBatchJob(directories, jobId, patch) {
+    const jobs = readClaudeBatchJobs(directories);
+    const index = jobs.findIndex(job => job.jobId === jobId);
+    if (index >= 0) {
+        jobs[index] = { ...jobs[index], ...patch };
+        writeClaudeBatchJobs(directories, jobs);
+    }
+}
+
+function removeClaudeBatchJob(directories, jobId) {
+    const jobs = readClaudeBatchJobs(directories).filter(job => job.jobId !== jobId);
+    writeClaudeBatchJobs(directories, jobs);
+}
+
+// Resolve the Claude key the same way sendClaudeRequest does: proxy password
+// when a reverse proxy is set, otherwise the stored secret.
+function resolveClaudeBatchKey(request) {
+    return request.body.reverse_proxy
+        ? request.body.proxy_password
+        : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
+}
+
+function claudeBatchHeaders(apiKey) {
+    return {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': apiKey,
+    };
+}
+
+function claudeBatchBaseUrl(request) {
+    return request.body.reverse_proxy || API_CLAUDE;
+}
+
+// Frontend poller settings, so the interval and give-up window live in config.yaml.
+function getClaudeBatchPollSettings() {
+    return {
+        pollIntervalMs: Math.max(5000, getConfigValue('claude.batchFlex.pollIntervalMs', 20000, 'number')),
+        maxWaitMinutes: Math.max(1, getConfigValue('claude.batchFlex.maxWaitMinutes', 90, 'number')),
+    };
+}
+
+// Submit a single generation as a batch of one.
+router.post('/claude-batch/submit', async function (request, response) {
+    try {
+        if (!getConfigValue('claude.batchFlex.enabled', false, 'boolean')) {
+            return response.status(409).send({ ineligible: true, reason: 'Batch mode is disabled in config.yaml.' });
+        }
+
+        const apiKey = resolveClaudeBatchKey(request);
+        // The 50% batch discount only applies to a real API key. Without one,
+        // signal the frontend to fall back to a normal synchronous request.
+        if (!apiKey || !apiKey.includes('sk-ant')) {
+            return response.status(409).send({ ineligible: true, reason: 'Batch mode requires an sk-ant API key.' });
+        }
+
+        const { requestBody } = buildClaudeRequestBody(request, apiKey);
+        delete requestBody.stream; // streaming is not allowed inside a batch
+
+        const customId = ('st-' + uuidv4().replace(/-/g, '')).slice(0, 64);
+        const batchPayload = { requests: [{ custom_id: customId, params: requestBody }] };
+
+        const createUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches');
+        const proxyResponse = await fetch(createUrl, {
+            method: 'POST',
+            headers: claudeBatchHeaders(apiKey),
+            body: JSON.stringify(batchPayload),
+        });
+
+        const data = await proxyResponse.json().catch(() => null);
+        if (!proxyResponse.ok || !data?.id) {
+            console.warn(color.red(`Claude batch submit failed: ${proxyResponse.status} ${JSON.stringify(data)}`));
+            return response.status(502).send({ error: true, detail: data });
+        }
+
+        const job = {
+            jobId: uuidv4(),
+            batchId: data.id,
+            customId,
+            chatId: request.body.batch_chat_id ?? null,
+            characterName: request.body.batch_character_name ?? null,
+            model: request.body.model,
+            createdAt: Date.now(),
+            status: 'in_progress',
+        };
+        addClaudeBatchJob(request.user.directories, job);
+
+        console.info(color.blue(`Claude batch queued: ${data.id} (job ${job.jobId})`));
+        return response.send({
+            jobId: job.jobId,
+            batchId: job.batchId,
+            customId,
+            processing_status: data.processing_status,
+            ...getClaudeBatchPollSettings(),
+        });
+    } catch (error) {
+        console.error(color.red(`Claude batch submit error: ${error}`));
+        return response.status(500).send({ error: true });
+    }
+});
+
+// Poll a batch's processing status.
+router.post('/claude-batch/status', async function (request, response) {
+    try {
+        const apiKey = resolveClaudeBatchKey(request);
+        const statusUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId));
+        const proxyResponse = await fetch(statusUrl, { headers: claudeBatchHeaders(apiKey) });
+        const data = await proxyResponse.json().catch(() => null);
+
+        if (proxyResponse.ok && data?.processing_status && request.body.jobId) {
+            updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: data.processing_status });
+        }
+        return response.status(proxyResponse.status).send(data ?? { error: true });
+    } catch (error) {
+        console.error(color.red(`Claude batch status error: ${error}`));
+        return response.status(500).send({ error: true });
+    }
+});
+
+// Retrieve and reshape a completed batch's single result (word replacements applied).
+router.post('/claude-batch/result', async function (request, response) {
+    try {
+        const apiKey = resolveClaudeBatchKey(request);
+        const resultsUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'results');
+        const proxyResponse = await fetch(resultsUrl, { headers: claudeBatchHeaders(apiKey) });
+        const text = await proxyResponse.text();
+
+        if (!proxyResponse.ok) {
+            return response.status(proxyResponse.status).send({ error: true, detail: tryParse(text) ?? text });
+        }
+
+        // Results are JSONL. For a batch of one, pick the line for our custom_id.
+        const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+        const line = lines.find(l => !request.body.customId || l.includes(request.body.customId)) ?? lines[0];
+        if (!line) {
+            return response.status(502).send({ error: true, detail: 'Empty batch results' });
+        }
+
+        const entry = JSON.parse(line);
+        const result = entry?.result;
+
+        if (result?.type !== 'succeeded') {
+            if (request.body.jobId) {
+                updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: result?.type ?? 'errored' });
+            }
+            return response.send({ resultType: result?.type ?? 'errored', error: result?.error ?? null });
+        }
+
+        const message = result.message ?? {};
+        const responseText = message?.content?.find(part => part.type === 'text')?.text || message?.content?.[0]?.text || '';
+        // Same hybrid shape the synchronous Claude path returns: OpenAI choices[] +
+        // Claude-native content[] (which extractMessageFromData reads first).
+        const reply = {
+            choices: [{ message: { content: responseText } }],
+            content: message.content,
+            usage: message.usage,
+        };
+
+        const processed = enforceWordReplacementsOnResponse(reply, getWordReplacementEnabled(request));
+
+        if (request.body.jobId) {
+            updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ready', resultType: 'succeeded', resultReply: processed });
+        }
+        return response.send({ resultType: 'succeeded', reply: processed });
+    } catch (error) {
+        console.error(color.red(`Claude batch result error: ${error}`));
+        return response.status(500).send({ error: true });
+    }
+});
+
+// Acknowledge delivery — drop the job from the persisted store.
+router.post('/claude-batch/ack', function (request, response) {
+    if (request.body.jobId) {
+        removeClaudeBatchJob(request.user.directories, request.body.jobId);
+    }
+    return response.send({ ok: true });
+});
+
+// Cancel an in-progress batch.
+router.post('/claude-batch/cancel', async function (request, response) {
+    try {
+        const apiKey = resolveClaudeBatchKey(request);
+        const cancelUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'cancel');
+        const proxyResponse = await fetch(cancelUrl, { method: 'POST', headers: claudeBatchHeaders(apiKey) });
+        const data = await proxyResponse.json().catch(() => ({}));
+        if (request.body.jobId) {
+            removeClaudeBatchJob(request.user.directories, request.body.jobId);
+        }
+        return response.status(proxyResponse.status).send(data);
+    } catch (error) {
+        console.error(color.red(`Claude batch cancel error: ${error}`));
+        return response.status(500).send({ error: true });
+    }
+});
+
+// List this user's persisted batch jobs (for resume on reload / restart).
+router.get('/claude-batch/list', function (request, response) {
+    return response.send({ jobs: readClaudeBatchJobs(request.user.directories), ...getClaudeBatchPollSettings() });
 });
 
 router.post('/bias', async function (request, response) {

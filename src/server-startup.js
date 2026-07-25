@@ -1,7 +1,7 @@
 import https from 'node:https';
 import http from 'node:http';
 import fs from 'node:fs';
-import { color, urlHostnameToIPv6, getHasIP } from './util.js';
+import { color, urlHostnameToIPv6, getHasIP, getConfigValue } from './util.js';
 
 // Express routers
 import { router as userDataRouter } from './users.js';
@@ -268,6 +268,20 @@ export class ServerStartup {
     }
 
     /**
+     * Lifts Node's default 5-minute request timeout when the Claude "Flex"
+     * batch tier is enabled, so a slow synchronous fallback isn't killed
+     * mid-flight. No-op otherwise, keeping the default Slowloris guard.
+     * @param {import('http').Server|import('https').Server} server
+     */
+    #applyBatchFlexTimeout(server) {
+        if (getConfigValue('claude.batchFlex.enabled', false, 'boolean')) {
+            server.requestTimeout = 0;
+            server.headersTimeout = 0;
+            console.log(color.yellow('Claude Flex batch mode: request timeout disabled.'));
+        }
+    }
+
+    /**
      * Creates an HTTPS server.
      * @param {URL} url The URL to listen on
      * @param {number} ipVersion the ip version to use
@@ -283,6 +297,7 @@ export class ServerStartup {
                 passphrase: String(this.cliArgs.keyPassphrase ?? ''),
             };
             const server = https.createServer(sslOptions, this.app);
+            this.#applyBatchFlexTimeout(server);
             server.on('error', reject);
             server.on('listening', resolve);
 
@@ -306,6 +321,7 @@ export class ServerStartup {
     #createHttpServer(url, ipVersion) {
         return new Promise((resolve, reject) => {
             const server = http.createServer(this.app);
+            this.#applyBatchFlexTimeout(server);
             server.on('error', reject);
             server.on('listening', resolve);
 

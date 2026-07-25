@@ -288,6 +288,38 @@ export const service_tier_types = {
     priority: 'priority',
 };
 
+/**
+ * Whether the current settings should route a Claude generation through the
+ * async Message Batches API ("Flex" tier, 50% cost). Requires the Claude
+ * source, the flex service tier, and an sk-ant API key sent as the proxy
+ * password (the only auth the batch discount applies to).
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {boolean}
+ */
+export function isClaudeFlexBatchEligible(settings = oai_settings) {
+    return settings.chat_completion_source === chat_completion_sources.CLAUDE
+        && settings.service_tier === service_tier_types.flex
+        // Group generation chains each member's reply into the next member's prompt,
+        // which a detached batch can't satisfy — keep groups on the synchronous path.
+        && !selected_group
+        && typeof settings.proxy_password === 'string'
+        && settings.proxy_password.includes('sk-ant');
+}
+
+/**
+ * Proxy credentials + word-replacement flag needed to poll/retrieve a Claude
+ * batch. Pulled live from oai_settings so it works after a reload (when the
+ * original generate_data is gone) and reflects any settings changes.
+ * @returns {{ reverse_proxy: string, proxy_password: string, word_replacement_enabled: boolean }}
+ */
+export function getClaudeBatchRequestExtras() {
+    return {
+        reverse_proxy: oai_settings.reverse_proxy,
+        proxy_password: oai_settings.proxy_password,
+        word_replacement_enabled: oai_settings.word_replacement_enabled,
+    };
+}
+
 const sensitiveFields = [
     'reverse_proxy',
     'proxy_password',
@@ -2860,7 +2892,8 @@ export async function createGenerationParameters(settings, model, type, messages
 
     const isO1 = gptSources.includes(settings.chat_completion_source) && ['o1-2024-12-17', 'o1'].includes(model);
     const isWorkersAIJsonMode = settings.chat_completion_source === chat_completion_sources.WORKERS_AI && jsonSchema;
-    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode;
+    // Claude "Flex" batch is asynchronous — the API forbids streaming inside a batch.
+    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode && !isClaudeFlexBatchEligible(settings);
 
     const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);

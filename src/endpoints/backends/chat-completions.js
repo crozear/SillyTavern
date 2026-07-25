@@ -3503,6 +3503,9 @@ router.post('/word-replacements', function (request, response) {
 // Jobs are persisted per-user so a page reload / server restart can resume.
 // ---------------------------------------------------------------------------
 
+// Keep in sync with CLAUDE_FLEX_BATCH_MODELS in public/scripts/openai.js.
+const CLAUDE_BATCH_MODELS = /^claude-fable-5/;
+
 function getClaudeBatchStorePath(directories) {
     return path.join(directories.root, 'claude-batches.json');
 }
@@ -3531,6 +3534,10 @@ function addClaudeBatchJob(directories, job) {
     const jobs = readClaudeBatchJobs(directories);
     jobs.push(job);
     writeClaudeBatchJobs(directories, jobs);
+}
+
+function findClaudeBatchJob(directories, jobId) {
+    return readClaudeBatchJobs(directories).find(job => job.jobId === jobId) ?? null;
 }
 
 function updateClaudeBatchJob(directories, jobId, patch) {
@@ -3567,6 +3574,25 @@ function claudeBatchBaseUrl(request) {
     return request.body.reverse_proxy || API_CLAUDE;
 }
 
+// "1m 20s" / "45s" — batches run for minutes, so wall time is the useful number.
+function formatClaudeBatchElapsed(since) {
+    if (!Number.isFinite(since)) return '';
+    const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+// Same one-line usage summary the synchronous Claude path prints, so batched and
+// blocking generations are comparable at a glance in the console.
+function formatClaudeUsageMeta(model, usage, extras = {}) {
+    const u = usage ?? {};
+    let meta = `model: ${model} | in: ${u.input_tokens ?? '?'} | out: ${u.output_tokens ?? '?'} | cache_read: ${u.cache_read_input_tokens ?? 0} | cache_created: ${u.cache_creation_input_tokens ?? 0}`;
+    for (const [key, value] of Object.entries(extras)) {
+        if (value) meta += ` | ${key}: ${value}`;
+    }
+    return meta;
+}
+
 // Frontend poller settings, so the interval and give-up window live in config.yaml.
 function getClaudeBatchPollSettings() {
     return {
@@ -3587,6 +3613,13 @@ router.post('/claude-batch/submit', async function (request, response) {
         // signal the frontend to fall back to a normal synchronous request.
         if (!apiKey || !apiKey.includes('sk-ant')) {
             return response.status(409).send({ ineligible: true, reason: 'Batch mode requires an sk-ant API key.' });
+        }
+
+        // Mirrors isClaudeFlexBatchEligible on the frontend: every other Claude model
+        // is cheaper on subscription usage than at half the API price, so batching it
+        // would be a net loss. Re-checked here so resumed/stale callers can't slip past.
+        if (!CLAUDE_BATCH_MODELS.test(String(request.body.model ?? ''))) {
+            return response.status(409).send({ ineligible: true, reason: `Batch mode is not enabled for ${request.body.model}.` });
         }
 
         // The batch body is built from the same payload a synchronous /generate
@@ -3626,7 +3659,7 @@ router.post('/claude-batch/submit', async function (request, response) {
         };
         addClaudeBatchJob(request.user.directories, job);
 
-        console.info(color.blue(`Claude batch queued: ${data.id} (job ${job.jobId})`));
+        console.info(color.blue(`Claude batch queued: ${data.id} | model: ${job.model} | status: ${data.processing_status} | job: ${job.jobId}`));
         return response.send({
             jobId: job.jobId,
             batchId: job.batchId,
@@ -3649,7 +3682,15 @@ router.post('/claude-batch/status', async function (request, response) {
         const data = await proxyResponse.json().catch(() => null);
 
         if (proxyResponse.ok && data?.processing_status && request.body.jobId) {
+            // Polls run every ~20s, so only a state change is worth a console line.
+            const previous = findClaudeBatchJob(request.user.directories, request.body.jobId);
             updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: data.processing_status });
+
+            if (previous && previous.status !== data.processing_status) {
+                const counts = data.request_counts ?? {};
+                const summary = Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${k}: ${n}`).join(', ');
+                console.info(color.blue(`Claude batch ${request.body.batchId}: ${previous.status} → ${data.processing_status} after ${formatClaudeBatchElapsed(previous.createdAt)}${summary ? ` (${summary})` : ''}`));
+            }
         }
         return response.status(proxyResponse.status).send(data ?? { error: true });
     } catch (error) {
@@ -3680,7 +3721,10 @@ router.post('/claude-batch/result', async function (request, response) {
         const entry = JSON.parse(line);
         const result = entry?.result;
 
+        const job = request.body.jobId ? findClaudeBatchJob(request.user.directories, request.body.jobId) : null;
+
         if (result?.type !== 'succeeded') {
+            console.warn(color.red(`Claude batch ${request.body.batchId} ${result?.type ?? 'errored'}: ${JSON.stringify(result?.error ?? null)}`));
             if (request.body.jobId) {
                 updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: result?.type ?? 'errored' });
             }
@@ -3696,6 +3740,14 @@ router.post('/claude-batch/result', async function (request, response) {
             content: message.content,
             usage: message.usage,
         };
+
+        console.debug('Claude batch response:', message);
+        console.info(formatClaudeUsageMeta(message?.model, message?.usage, {
+            org: proxyResponse.headers.get('anthropic-organization-id'),
+            msg: message?.id,
+            batch: request.body.batchId,
+            waited: job ? formatClaudeBatchElapsed(job.createdAt) : '',
+        }));
 
         const processed = enforceWordReplacementsOnResponse(reply, getWordReplacementEnabled(request));
 

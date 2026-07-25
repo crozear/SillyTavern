@@ -289,15 +289,24 @@ export const service_tier_types = {
 };
 
 /**
+ * Models the batch discount is actually worth taking. Everything else is cheaper
+ * on subscription usage than at 50% of the API price, so batching them would cost
+ * more, not less. Fable 5 is the exception: it only bills at subscription rates on
+ * the Max plan, so the API batch discount wins.
+ */
+const CLAUDE_FLEX_BATCH_MODELS = /^claude-fable-5/;
+
+/**
  * Whether the current settings should route a Claude generation through the
  * async Message Batches API ("Flex" tier, 50% cost). Requires the Claude
- * source, the flex service tier, and an sk-ant API key sent as the proxy
- * password (the only auth the batch discount applies to).
+ * source, a batch-worthy model, the flex service tier, and an sk-ant API key
+ * sent as the proxy password (the only auth the batch discount applies to).
  * @param {object} [settings] Settings object (defaults to oai_settings)
  * @returns {boolean}
  */
 export function isClaudeFlexBatchEligible(settings = oai_settings) {
     return settings.chat_completion_source === chat_completion_sources.CLAUDE
+        && CLAUDE_FLEX_BATCH_MODELS.test(String(settings.claude_model ?? ''))
         && settings.service_tier === service_tier_types.flex
         // Group generation chains each member's reply into the next member's prompt,
         // which a detached batch can't satisfy — keep groups on the synchronous path.

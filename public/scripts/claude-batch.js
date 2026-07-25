@@ -12,7 +12,7 @@ import {
     updateMessageBlock,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
-import { createGenerationParameters, getChatCompletionModel, getClaudeBatchRequestExtras, isClaudeFlexBatchEligible, oai_settings } from './openai.js';
+import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
 import { t } from './i18n.js';
@@ -20,12 +20,13 @@ import { t } from './i18n.js';
 const API_BASE = '/api/backends/chat-completions/claude-batch';
 
 /** Text shown in the chat while the batch is cooking. */
-const PLACEHOLDER = '*⏳ Waiting for a Claude Flex batch reply…*';
+const PLACEHOLDER = '*⏳ Waiting for a batched reply…*';
 
-/** Generation types that always need the synchronous path: they either edit an
- * existing message in place (swipe/continue) or feed their result straight back
- * into the UI/pipeline (impersonate/quiet), neither of which survives detaching. */
-const NON_BATCHABLE_TYPES = new Set(['swipe', 'continue', 'impersonate', 'quiet']);
+/** `quiet` is extension-internal (summarize, vectors, …): the caller awaits a
+ * returned string, which a detached job can't provide. It's never triggered by
+ * hand, so it runs synchronously even with Batch Processing on — the one case
+ * where a sync fallback can't be a cost surprise. */
+const ALWAYS_SYNC_TYPES = new Set(['quiet']);
 
 /** Active jobs, keyed by jobId. @type {Map<string, BatchJob>} */
 const activeJobs = new Map();
@@ -41,6 +42,9 @@ let maxWaitMinutes = 90;
  * @property {string|null} chatId Chat the reply belongs to
  * @property {string|null} characterName Character name for toasts
  * @property {number} createdAt Timestamp of submission
+ * @property {'normal'|'swipe'|'continue'} mode How the reply gets written back
+ * @property {number} [swipeId] Swipe slot to fill (mode 'swipe')
+ * @property {string} [originalMes] Message text before the continuation (mode 'continue')
  * @property {number} [timer] setInterval handle
  * @property {object} [reply] Completed reply payload, awaiting delivery
  * @property {boolean} [delivering] Guard against re-entrant delivery
@@ -76,16 +80,21 @@ function postBatch(path, body) {
  * @param {string} type Generation type
  * @param {object} generateData Generation payload from Generate() — carries the prompt, not the API body
  * @param {import('../script.js').AdditionalRequestOptions} [options] Additional request options
- * @returns {Promise<'queued'|'ineligible'>} 'ineligible' means: run the normal request instead
+ * @returns {Promise<'queued'|'sync'|'refused'>} 'sync' = run the normal request; 'refused' = abort, don't bill
  */
 export async function startClaudeBatch(type, generateData, options = {}) {
-    // Eligibility (source/tier/key/group) lives in isClaudeFlexBatchEligible so that
-    // this check, the `stream` flag, and isStreamingEnabled can never disagree.
-    if (!isClaudeFlexBatchEligible() || NON_BATCHABLE_TYPES.has(type)) {
-        return 'ineligible';
+    if (!isClaudeBatchModeOn() || ALWAYS_SYNC_TYPES.has(type)) {
+        return 'sync';
+    }
+
+    // Defensive only: Generate() already refuses these up front, with the toast, before
+    // anything is committed to the chat. Never silently downgrade to a paid sync call.
+    if (getClaudeBatchBlocker(type)) {
+        return 'refused';
     }
 
     const chatId = getCurrentChatId();
+    const mode = type === 'swipe' ? 'swipe' : (type === 'continue' ? 'continue' : 'normal');
     let response;
 
     // Generate() only hands over `{ prompt, … }`; the actual API body is assembled
@@ -97,8 +106,9 @@ export async function startClaudeBatch(type, generateData, options = {}) {
         ({ generate_data } = await createGenerationParameters(oai_settings, model, type, generateData?.prompt, options));
         await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
     } catch (error) {
-        console.error('Claude batch parameters could not be built, falling back to a normal request.', error);
-        return 'ineligible';
+        console.error('Claude batch parameters could not be built.', error);
+        toastr.error(t`Couldn't build the batch request. Nothing was sent.`, t`Batch Processing`, { timeOut: 15000 });
+        return 'refused';
     }
 
     try {
@@ -113,48 +123,84 @@ export async function startClaudeBatch(type, generateData, options = {}) {
             }),
         });
     } catch (error) {
-        console.error('Claude batch submit failed, falling back to a normal request.', error);
-        return 'ineligible';
-    }
-
-    if (response.status === 409) {
-        // No sk-ant key — the discount wouldn't apply, so don't wait for nothing.
-        console.info('Claude batch is not eligible, falling back to a normal request.');
-        return 'ineligible';
+        console.error('Claude batch submit failed.', error);
+        toastr.error(t`Couldn't reach the batch endpoint. Nothing was sent.`, t`Batch Processing`, { timeOut: 15000 });
+        return 'refused';
     }
 
     if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        console.error('Claude batch submit error, falling back to a normal request.', response.status, detail);
-        toastr.warning(t`Batch submission failed — sending a normal request instead.`, t`Claude Flex`);
-        return 'ineligible';
+        const detail = await response.json().catch(() => null);
+        console.error('Claude batch submit error.', response.status, detail);
+        toastr.error(
+            detail?.reason || t`Batch submission failed. Nothing was sent — uncheck Batch Processing to send normally.`,
+            t`Batch Processing`,
+            { timeOut: 15000, extendedTimeOut: 25000 },
+        );
+        return 'refused';
     }
 
     const data = await response.json();
     applyPollSettings(data);
 
-    // The placeholder is saved to disk right away, so it survives navigating away.
-    // `fromStreaming` suppresses the MESSAGE_RECEIVED/CHARACTER_MESSAGE_RENDERED
-    // emits so extensions (TTS, translate, …) don't act on the placeholder text —
-    // they're emitted once for real when the reply is delivered.
-    await saveReply({ type: 'normal', getMessage: PLACEHOLDER, fromStreaming: true });
-    const message = chat[chat.length - 1];
-    message.extra = message.extra ?? {};
-    message.extra.claude_batch_job_id = data.jobId;
-    message.extra.claude_batch_pending = true;
-    await saveChatConditional();
-
-    track({
+    const job = {
         jobId: data.jobId,
         batchId: data.batchId,
         customId: data.customId,
         chatId: chatId ?? null,
         characterName: name2,
         createdAt: Date.now(),
-    });
+        mode,
+    };
 
-    toastr.info(t`Reply will arrive here when it's done — keep chatting meanwhile.`, t`Claude Flex batch queued`, { timeOut: 8000 });
+    await placeholderFor(job);
+    // Delivery bookkeeping is only known after the placeholder exists, so persist it
+    // now — a reload has to be able to write the reply back into the right slot.
+    await postBatch('annotate', {
+        jobId: job.jobId,
+        mode: job.mode,
+        swipeId: job.swipeId,
+        originalMes: job.originalMes,
+    }).catch(error => console.error('Failed to persist batch delivery info.', error));
+    track(job);
+
+    toastr.info(t`Reply will arrive here when it's done — keep using other chats meanwhile.`, t`Batch queued`, { timeOut: 8000 });
     return 'queued';
+}
+
+/**
+ * Parks a placeholder in the chat so the pending reply has a visible, on-disk home
+ * that survives navigating away or reloading. Records on the job whatever delivery
+ * will need to write the real reply back into the right place.
+ * `fromStreaming` suppresses the MESSAGE_RECEIVED/CHARACTER_MESSAGE_RENDERED emits
+ * so extensions (TTS, translate, …) don't act on placeholder text — they fire once
+ * for real at delivery.
+ * @param {BatchJob} job Job being submitted (mutated with delivery bookkeeping)
+ * @returns {Promise<void>}
+ */
+async function placeholderFor(job) {
+    if (job.mode === 'continue') {
+        // Continue appends to the existing message, so there's no new message to own
+        // the placeholder. Remember the text as it stands and tack the marker on.
+        const target = chat[chat.length - 1];
+        job.originalMes = target.mes;
+        await saveReply({ type: 'continue', getMessage: `\n\n${PLACEHOLDER}`, fromStreaming: true });
+    } else {
+        // 'swipe' fills the slot the swipe machinery just opened; 'normal' pushes a
+        // new message. Either way saveReply leaves it as the last message in chat.
+        await saveReply({ type: job.mode, getMessage: PLACEHOLDER, fromStreaming: true });
+    }
+
+    const message = chat[chat.length - 1];
+    message.extra = message.extra ?? {};
+    message.extra.claude_batch_job_id = job.jobId;
+    message.extra.claude_batch_pending = true;
+
+    if (job.mode === 'swipe') {
+        // Deliver into this exact slot even if the user swipes around while waiting.
+        job.swipeId = message.swipe_id ?? 0;
+    }
+
+    await saveChatConditional();
 }
 
 /**
@@ -297,29 +343,44 @@ async function writeIntoChat(job, text, reasoning) {
     }
 
     if (index === -1) {
+        // Placeholder is gone (deleted, or the chat was rolled back). Append instead
+        // of guessing where it belonged.
         await saveReply({ type: 'normal', getMessage: text, reasoning });
         await saveChatConditional();
         return true;
     }
 
+    // Continue appends to what was already there rather than replacing it.
+    const finalText = job.mode === 'continue' ? `${job.originalMes ?? ''}${text}` : text;
+
     const message = chat[index];
-    message.mes = text;
     message.extra = message.extra ?? {};
     message.extra.reasoning = reasoning || '';
     delete message.extra.claude_batch_pending;
     delete message.extra.claude_batch_job_id;
     message.gen_finished = new Date();
 
-    if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
-        message.swipes[message.swipe_id] = text;
-        if (Array.isArray(message.swipe_info) && message.swipe_info[message.swipe_id]) {
-            message.swipe_info[message.swipe_id].extra = structuredClone(message.extra);
+    // Fill the slot this job reserved. For a swipe that's the slot captured at submit,
+    // which may not be the one on screen if the user swiped around while waiting.
+    const slotId = job.mode === 'swipe' && typeof job.swipeId === 'number'
+        ? job.swipeId
+        : message.swipe_id;
+
+    if (Array.isArray(message.swipes) && typeof slotId === 'number') {
+        message.swipes[slotId] = finalText;
+        if (Array.isArray(message.swipe_info) && message.swipe_info[slotId]) {
+            message.swipe_info[slotId].extra = structuredClone(message.extra);
         }
     }
 
-    updateMessageBlock(index, message);
-    await eventSource.emit(event_types.MESSAGE_RECEIVED, index, 'normal');
-    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, index, 'normal');
+    const isSlotOnScreen = typeof slotId !== 'number' || message.swipe_id === slotId;
+    if (isSlotOnScreen) {
+        message.mes = finalText;
+        updateMessageBlock(index, message);
+    }
+
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, index, job.mode);
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, index, job.mode);
     await saveChatConditional();
     return true;
 }
@@ -376,15 +437,22 @@ async function deliver(job) {
  * @returns {Promise<void>}
  */
 async function failJob(job, reason) {
-    toastr.error(reason, t`Claude Flex batch`, { timeOut: 15000 });
+    toastr.error(reason, t`Batch Processing`, { timeOut: 15000 });
 
     if (!job.chatId || getCurrentChatId() === job.chatId) {
         const index = findPlaceholderIndex(job.jobId);
         if (index !== -1) {
-            chat[index].mes = `*⚠️ ${reason}*`;
-            delete chat[index].extra.claude_batch_pending;
-            delete chat[index].extra.claude_batch_job_id;
-            updateMessageBlock(index, chat[index]);
+            const message = chat[index];
+            // A failed continue should leave the message as it was, not blow it away.
+            message.mes = job.mode === 'continue'
+                ? `${job.originalMes ?? ''}\n\n*⚠️ ${reason}*`
+                : `*⚠️ ${reason}*`;
+            delete message.extra.claude_batch_pending;
+            delete message.extra.claude_batch_job_id;
+            if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
+                message.swipes[message.swipe_id] = message.mes;
+            }
+            updateMessageBlock(index, message);
             await saveChatConditional();
         }
     }
@@ -436,6 +504,9 @@ export async function initClaudeBatchTracker() {
                 chatId: stored.chatId ?? null,
                 characterName: stored.characterName ?? null,
                 createdAt: stored.createdAt ?? Date.now(),
+                mode: stored.mode ?? 'normal',
+                swipeId: stored.swipeId,
+                originalMes: stored.originalMes,
             });
         }
 
@@ -453,4 +524,18 @@ export async function initClaudeBatchTracker() {
  */
 export function hasPendingClaudeBatches() {
     return activeJobs.size > 0;
+}
+
+/**
+ * Whether a chat has a batch in flight. Generating in such a chat would feed the
+ * placeholder into the prompt as an assistant turn (and a swipe would swipe the
+ * placeholder itself), so the caller blocks generation until it lands.
+ * @param {string} [chatId] Chat id (defaults to the open chat)
+ * @returns {boolean}
+ */
+export function hasPendingClaudeBatchForChat(chatId = getCurrentChatId()) {
+    if (!chatId) {
+        return false;
+    }
+    return [...activeJobs.values()].some(job => job.chatId === chatId);
 }

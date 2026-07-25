@@ -3605,14 +3605,14 @@ function getClaudeBatchPollSettings() {
 router.post('/claude-batch/submit', async function (request, response) {
     try {
         if (!getConfigValue('claude.batchFlex.enabled', false, 'boolean')) {
-            return response.status(409).send({ ineligible: true, reason: 'Batch mode is disabled in config.yaml.' });
+            return response.status(409).send({ ineligible: true, reason: 'Batch Processing is disabled in config.yaml (claude.batchFlex.enabled).' });
         }
 
+        // The 50% discount only applies to a real API key. Refuse rather than fall
+        // back, so an unbatchable request can never be billed at full price silently.
         const apiKey = resolveClaudeBatchKey(request);
-        // The 50% batch discount only applies to a real API key. Without one,
-        // signal the frontend to fall back to a normal synchronous request.
         if (!apiKey || !apiKey.includes('sk-ant')) {
-            return response.status(409).send({ ineligible: true, reason: 'Batch mode requires an sk-ant API key.' });
+            return response.status(409).send({ ineligible: true, reason: 'Batch Processing needs an sk-ant API key as the proxy password. Nothing was sent.' });
         }
 
         // Mirrors isClaudeFlexBatchEligible on the frontend: every other Claude model
@@ -3759,6 +3759,19 @@ router.post('/claude-batch/result', async function (request, response) {
         console.error(color.red(`Claude batch result error: ${error}`));
         return response.status(500).send({ error: true });
     }
+});
+
+// Record how a completed reply should be written back into the chat. Sent right
+// after submit, once the frontend has parked its placeholder and knows the target.
+router.post('/claude-batch/annotate', function (request, response) {
+    if (request.body.jobId) {
+        updateClaudeBatchJob(request.user.directories, request.body.jobId, {
+            mode: request.body.mode ?? 'normal',
+            swipeId: request.body.swipeId,
+            originalMes: request.body.originalMes,
+        });
+    }
+    return response.send({ ok: true });
 });
 
 // Acknowledge delivery — drop the job from the persisted store.

@@ -294,25 +294,53 @@ export const service_tier_types = {
  * more, not less. Fable 5 is the exception: it only bills at subscription rates on
  * the Max plan, so the API batch discount wins.
  */
-const CLAUDE_FLEX_BATCH_MODELS = /^claude-fable-5/;
+const CLAUDE_BATCH_WORTH_IT_MODELS = /^claude-fable-5/;
 
 /**
- * Whether the current settings should route a Claude generation through the
- * async Message Batches API ("Flex" tier, 50% cost). Requires the Claude
- * source, a batch-worthy model, the flex service tier, and an sk-ant API key
- * sent as the proxy password (the only auth the batch discount applies to).
+ * Whether the user has asked for Claude generations to go through the async
+ * Message Batches API. This is *intent only* — it deliberately says nothing about
+ * whether the request can actually be batched, so that an unbattable request is
+ * refused outright rather than silently falling back to a full-price sync call.
+ * Use `getClaudeBatchBlocker()` for that.
  * @param {object} [settings] Settings object (defaults to oai_settings)
  * @returns {boolean}
  */
-export function isClaudeFlexBatchEligible(settings = oai_settings) {
+export function isClaudeBatchModeOn(settings = oai_settings) {
     return settings.chat_completion_source === chat_completion_sources.CLAUDE
-        && CLAUDE_FLEX_BATCH_MODELS.test(String(settings.claude_model ?? ''))
-        && settings.service_tier === service_tier_types.flex
-        // Group generation chains each member's reply into the next member's prompt,
-        // which a detached batch can't satisfy — keep groups on the synchronous path.
-        && !selected_group
-        && typeof settings.proxy_password === 'string'
-        && settings.proxy_password.includes('sk-ant');
+        && Boolean(settings.claude_batch_processing);
+}
+
+/**
+ * Why the current request can't be batched, if it can't. Returning a reason means
+ * the generation is refused — never quietly downgraded to a paid sync request.
+ * `quiet` is the one exception (handled by the caller): it's extension-internal,
+ * awaits a returned string, and is never triggered by hand.
+ * @param {string} [type] Generation type
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {string|null} Human-readable reason, or null when batching is fine
+ */
+export function getClaudeBatchBlocker(type, settings = oai_settings) {
+    if (!CLAUDE_BATCH_WORTH_IT_MODELS.test(String(settings.claude_model ?? ''))) {
+        return 'Batching is only cheaper for Fable 5 — other Claude models cost less on subscription usage than at 50% of the API price. Switch model or uncheck Batch Processing.';
+    }
+
+    if (typeof settings.proxy_password !== 'string' || !settings.proxy_password.includes('sk-ant')) {
+        return 'Batch Processing needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount.';
+    }
+
+    // Group generation chains each member's reply into the next member's prompt,
+    // which a detached batch can't satisfy.
+    if (selected_group) {
+        return 'Group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Uncheck Batch Processing to generate here.';
+    }
+
+    // Impersonation lands in the send textarea, not the chat, so there's nowhere to
+    // park a placeholder and no safe way to deliver it an hour later.
+    if (type === 'impersonate') {
+        return 'Impersonate can\'t be batched — its result goes to the input box, not the chat. Uncheck Batch Processing to use it.';
+    }
+
+    return null;
 }
 
 /**
@@ -444,6 +472,7 @@ export const settingsToUpdate = {
     claude_task_budget_total: ['#claude_task_budget_total', 'claude_task_budget_total', false, false],
     claude_task_budget_max_iterations: ['#claude_task_budget_max_iterations', 'claude_task_budget_max_iterations', false, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
+    claude_batch_processing: ['#claude_batch_processing', 'claude_batch_processing', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     pro_reasoning_mode: ['#openai_pro_reasoning_mode', 'pro_reasoning_mode', true, false],
     openai_enable_caching: ['#openai_enable_caching', 'openai_enable_caching', true, false],
@@ -570,6 +599,7 @@ export const default_settings = {
     claude_task_budget_total: 64000,
     claude_task_budget_max_iterations: 25,
     word_replacement_enabled: true,
+    claude_batch_processing: false,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
     pro_reasoning_mode: false,
@@ -2902,7 +2932,7 @@ export async function createGenerationParameters(settings, model, type, messages
     const isO1 = gptSources.includes(settings.chat_completion_source) && ['o1-2024-12-17', 'o1'].includes(model);
     const isWorkersAIJsonMode = settings.chat_completion_source === chat_completion_sources.WORKERS_AI && jsonSchema;
     // Claude "Flex" batch is asynchronous — the API forbids streaming inside a batch.
-    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode && !isClaudeFlexBatchEligible(settings);
+    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode && !isClaudeBatchModeOn(settings);
 
     const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);
@@ -7604,6 +7634,11 @@ export function initOpenAI() {
 
     $('#openai_enable_caching').on('input', function () {
         oai_settings.openai_enable_caching = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#claude_batch_processing').on('input', function () {
+        oai_settings.claude_batch_processing = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

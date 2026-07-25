@@ -112,9 +112,10 @@ import {
     selected_proxy,
     initOpenAI,
     getLastJailbreakInstructions,
-    isClaudeFlexBatchEligible,
+    isClaudeBatchModeOn,
+    getClaudeBatchBlocker,
 } from './scripts/openai.js';
-import { initClaudeBatchTracker, startClaudeBatch } from './scripts/claude-batch.js';
+import { hasPendingClaudeBatchForChat, initClaudeBatchTracker, startClaudeBatch } from './scripts/claude-batch.js';
 
 import {
     generateNovelWithStreaming,
@@ -3490,10 +3491,10 @@ export function isStreamingEnabled() {
     return (
         (main_api == 'openai' &&
             oai_settings.stream_openai &&
-            // Claude Flex goes through the batch API, which forbids streaming. Keep this
-            // in sync with the `stream` flag in createGenerationParameters, so a batch
-            // that falls back to a normal request doesn't try to stream a JSON response.
-            !isClaudeFlexBatchEligible() &&
+            // Batch Processing goes through the Message Batches API, which forbids
+            // streaming. Keep this in sync with the `stream` flag in
+            // createGenerationParameters.
+            !isClaudeBatchModeOn() &&
             !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && ['o1-2024-12-17', 'o1'].includes(oai_settings.openai_model))
         )
         || (main_api == 'kobold' && kai_settings.streaming_kobold && kai_flags.can_use_streaming)
@@ -4313,6 +4314,26 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
         unblockGeneration(type);
         return Promise.resolve();
+    }
+
+    // A pending batch leaves a placeholder as the last message. Generating now would
+    // feed it into the prompt as an assistant turn, and a swipe would swipe the
+    // placeholder itself — so hold this chat until the reply lands.
+    if (!dryRun && type !== 'quiet' && hasPendingClaudeBatchForChat()) {
+        toastr.warning(t`A batched reply is still pending in this chat. It'll land here when it's done — other chats still work.`, t`Batch Processing`, { timeOut: 10000, preventDuplicates: true });
+        unblockGeneration(type);
+        return Promise.resolve();
+    }
+
+    // Refuse unbatchable requests up front, before anything is committed to the chat.
+    // Batch Processing is a cost choice, so the answer is "no", never a full-price send.
+    if (!dryRun && type !== 'quiet' && isClaudeBatchModeOn()) {
+        const batchBlocker = getClaudeBatchBlocker(type);
+        if (batchBlocker) {
+            toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000, preventDuplicates: true });
+            unblockGeneration(type);
+            return Promise.resolve();
+        }
     }
 
     if (isHordeGenerationNotAllowed()) {
@@ -5389,13 +5410,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         console.debug(`pushed prompt bits to itemizedPrompts array. Length is now: ${itemizedPrompts.length}`);
 
-        // Claude "Flex" tier is served by the Message Batches API: submit and detach,
-        // so the user can keep working while the batch cooks. Falls through to the
-        // normal request path if the batch isn't eligible or the submission fails.
-        if (main_api === 'openai' && !isImpersonate && !isContinue && type !== 'quiet' && type !== 'swipe') {
+        // Batch Processing is served by the Message Batches API: submit and detach, so
+        // the user can keep working while the batch cooks. A request that can't be
+        // batched is refused outright rather than silently sent at full price.
+        if (main_api === 'openai') {
             const batchOutcome = await startClaudeBatch(type, generate_data, { jsonSchema });
             if (batchOutcome === 'queued') {
                 return { claudeBatchQueued: true };
+            }
+            if (batchOutcome === 'refused') {
+                return { claudeBatchRefused: true };
             }
         }
 
@@ -5482,8 +5506,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             return data;
         }
 
-        // A Claude Flex batch was queued: it delivers itself later, so release the UI now.
-        if (data?.claudeBatchQueued) {
+        // A batch was queued (delivers itself later) or refused (nothing was sent).
+        // Either way there's no reply to process — just release the UI.
+        if (data?.claudeBatchQueued || data?.claudeBatchRefused) {
             unblockGeneration(type);
             streamingProcessor = null;
             return;

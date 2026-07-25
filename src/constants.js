@@ -552,7 +552,7 @@ export const CLAUDE_EFFORT_TIERS = ['low', 'medium', 'high', 'xhigh', 'max'];
  * newer shape would silently strip the user's temperature on every custom model.
  */
 const CLAUDE_DEFAULT_CAPABILITIES = {
-    /** @type {'none'|'manual'|'adaptive'} Which `thinking` field shapes the API accepts. */
+    /** @type {'none'|'manual'|'adaptive'|'both'} Which `thinking` field shapes the API accepts. `both` = adaptive and the deprecated manual budget (4.6 gen). */
     thinkingMode: 'manual',
     /** Whether omitting `thinking` entirely still produces thinking (5-series). */
     thinkingDefaultOn: false,
@@ -662,11 +662,13 @@ export const CLAUDE_MODEL_CAPABILITIES = [
         },
     },
     {
-        // 4.6: first adaptive generation. Top effort tier is named `max` here;
-        // `xhigh` did not exist yet. Still honours one of temperature/top_p.
+        // 4.6: first adaptive generation, but the only one that still accepts
+        // manual `enabled` + budget_tokens (deprecated, not rejected). Top effort
+        // tier is named `max` here; `xhigh` did not exist yet. Still honours one
+        // of temperature/top_p.
         pattern: /^claude-(opus|sonnet)-4-6/,
         caps: {
-            thinkingMode: 'adaptive',
+            thinkingMode: 'both',
             thinkingDefaultOn: false,
             canDisableThinking: 'always',
             supportsPrefill: false,

@@ -1575,10 +1575,15 @@ function buildClaudeRequestBody(request, apiKey) {
     const useSystemPrompt = Boolean(request.body.use_sysprompt);
     const reasoningEffort = request.body.reasoning_effort;
     const wantsThinkingOff = !reasoningEffort || reasoningEffort === 'none';
+    // On the 4.6 generation both shapes are accepted (manual budgets are deprecated
+    // but not rejected), so the "Adaptive Thinking" checkbox picks between them.
+    // Adaptive-only models (4.7+) ignore the checkbox entirely.
+    const useAdaptiveThinking = caps.thinkingMode === 'adaptive' ||
+        (caps.thinkingMode === 'both' && request.body.claude_use_adaptive_thinking !== false);
     // A manual thinking block also conflicts with a prefill, so decide this before
     // the converter runs: it has to drop the assistant turn BEFORE merging same-role
     // runs, or flipping it back to `user` afterwards doubles the final user message.
-    const manualThinkingActive = caps.thinkingMode === 'manual' && !wantsThinkingOff && reasoningEffort !== 'auto';
+    const manualThinkingActive = caps.thinkingMode !== 'none' && !useAdaptiveThinking && !wantsThinkingOff && reasoningEffort !== 'auto';
     const allowPrefill = caps.supportsPrefill && !manualThinkingActive;
     const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request), allowPrefill);
     const useWebSearch = caps.supportsWebSearch && Boolean(request.body.enable_web_search);
@@ -1669,7 +1674,15 @@ function buildClaudeRequestBody(request, apiKey) {
             console.info(color.blue(`Thinking cannot be disabled on ${model}; the "None" reasoning effort has no effect.`));
         }
 
-        if (wantsThinkingOff && !forcedOn) {
+        // On the 5-series the unchecked Adaptive Thinking box has no manual budget
+        // to fall back to, so it means "no thinking blocks" instead — thinking is
+        // on by default there, unlike 4.7/4.8 where the box is simply ignored.
+        // Effort is orthogonal on these models (it scopes the whole response, not
+        // just thinking), so it still rides along with `disabled` below.
+        const checkboxDisablesThinking = caps.thinkingMode === 'adaptive' && caps.thinkingDefaultOn &&
+            caps.canDisableThinking !== 'never' && request.body.claude_use_adaptive_thinking === false;
+
+        if ((wantsThinkingOff && !forcedOn) || checkboxDisablesThinking) {
             requestBody.thinking = { type: 'disabled' };
         } else {
             const minThinkTokens = 1024;
@@ -1680,10 +1693,11 @@ function buildClaudeRequestBody(request, apiKey) {
                 requestBody.max_tokens = newValue;
             }
 
-            if (caps.thinkingMode === 'adaptive') {
+            if (useAdaptiveThinking) {
                 requestBody.thinking = { type: 'adaptive' };
             } else {
-                // Pre-4.6: manual extended thinking with an explicit budget.
+                // Pre-4.6 models, or 4.6 with the Adaptive Thinking checkbox off:
+                // manual extended thinking with an explicit budget.
                 const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream, false);
                 if (Number.isInteger(budgetTokens)) {
                     requestBody.thinking = {
@@ -1692,9 +1706,12 @@ function buildClaudeRequestBody(request, apiKey) {
                     };
                 }
             }
+        }
 
-            // Effort rides along wherever the model supports it — that's every
-            // adaptive model, plus Opus 4.5 next to its manual budget.
+        // Effort rides along wherever the model supports it — every adaptive
+        // model, Opus 4.5 next to its manual budget, and the 5-series even with
+        // thinking disabled (`auto` resolves to null and sends nothing).
+        if (!wantsThinkingOff) {
             const effort = getClaudeAdaptiveEffort(reasoningEffort, caps);
             if (effort) {
                 requestBody.output_config ??= {};

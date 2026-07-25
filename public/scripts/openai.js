@@ -303,14 +303,20 @@ const CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/;
  * The frontend can't import from src/, and the server stays authoritative for what
  * actually goes on the wire — this table only drives sliders and control states.
  * Keep in sync with CLAUDE_MODEL_CAPABILITIES in src/constants.js.
- * @type {{ pattern: RegExp, caps: { contextWindow?: number, maxOutput?: number, adaptiveThinking?: boolean, highResImages?: boolean, inputPrice?: number } }[]}
+ * `adaptiveThinking` means adaptive-ONLY (manual budgets rejected with 400);
+ * models accepting both shapes, like the 4.6 generation, leave it unset.
+ * `thinkingToggle` keeps the checkbox live on adaptive-only models where
+ * unchecking it disables thinking outright (Opus 5 / Sonnet 5).
+ * @type {{ pattern: RegExp, caps: { contextWindow?: number, maxOutput?: number, adaptiveThinking?: boolean, thinkingToggle?: boolean, highResImages?: boolean, inputPrice?: number } }[]}
  */
 const CLAUDE_UI_CAPABILITIES = [
     { pattern: /^claude-(fable|mythos)-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.00001 } },
-    { pattern: /^claude-opus-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000005 } },
-    { pattern: /^claude-sonnet-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000002 } },
+    { pattern: /^claude-opus-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, thinkingToggle: true, highResImages: true, inputPrice: 0.000005 } },
+    { pattern: /^claude-sonnet-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, thinkingToggle: true, highResImages: true, inputPrice: 0.000002 } },
     { pattern: /^claude-opus-4-(7|8)/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000005 } },
-    { pattern: /^claude-(opus|sonnet)-4-6/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, inputPrice: 0.000005 } },
+    // 4.6 gets no adaptiveThinking flag: it accepts both adaptive and the
+    // deprecated manual budget, so the checkbox stays a real choice there.
+    { pattern: /^claude-(opus|sonnet)-4-6/, caps: { contextWindow: 1000000, maxOutput: 128000, inputPrice: 0.000005 } },
     { pattern: /^claude-sonnet-4-5/, caps: { contextWindow: 1000000, maxOutput: 64000, inputPrice: 0.000003 } },
     { pattern: /^claude-opus-4-5/, caps: { maxOutput: 64000, inputPrice: 0.000005 } },
     { pattern: /^claude-haiku-4-5/, caps: { maxOutput: 64000, inputPrice: 0.000001 } },
@@ -327,6 +333,7 @@ const CLAUDE_UI_DEFAULT_CAPABILITIES = {
     contextWindow: 200000,
     maxOutput: 8192,
     adaptiveThinking: false,
+    thinkingToggle: false,
     highResImages: false,
     inputPrice: 0.000003,
 };
@@ -340,6 +347,47 @@ function getClaudeUiCapabilities(model) {
     const name = String(model ?? '');
     const match = CLAUDE_UI_CAPABILITIES.find(entry => entry.pattern.test(name));
     return { ...CLAUDE_UI_DEFAULT_CAPABILITIES, ...(match?.caps ?? {}) };
+}
+
+/**
+ * Per-model guidance shown under the Reasoning Effort dropdown, condensed from
+ * Anthropic's recommended-effort docs. Matched most-specific-first; unknown and
+ * pre-4.6 models fall back to the manual thinking-budget explanation.
+ * @type {{ pattern: RegExp, hint: string }[]}
+ */
+const CLAUDE_EFFORT_HINTS = [
+    {
+        pattern: /^claude-(fable|mythos)-5/,
+        hint: 'Effort is the primary intelligence/latency/cost control on Fable 5. High (default) suits most tasks and Extra High the most capability-sensitive work; Medium and Low still perform well for routine tasks — often above Extra High on prior models. At High and above, raise the response length: it is a hard cap on thinking plus reply. Fable 5 always thinks, so None has no effect.',
+    },
+    {
+        pattern: /^claude-opus-5/,
+        hint: 'Defaults to High. Step up to Extra High for demanding coding and agentic work, or Max for unconstrained token spending; use Low and Medium liberally for cost and speed where quality holds. Effort controls thinking volume, not reply length. Thinking can only be disabled at High or below — with thinking off, Extra High/Max are lowered to High. Use a large response length at Extra High/Max.',
+    },
+    {
+        pattern: /^claude-sonnet-5/,
+        hint: 'Defaults to High (complex reasoning, coding, agentic work). Extra High is for the hardest coding and agentic tasks; Medium is the cost-saving step-down, comparable to Sonnet 4.6 at High; Low suits high-volume or latency-sensitive chat; Max is for unconstrained spending. Thinking can be disabled at any effort level.',
+    },
+    {
+        pattern: /^claude-opus-4-(7|8)/,
+        hint: 'Defaults to High. Start with Extra High for coding and agentic work, High for other intelligence-sensitive tasks, and Medium for cost-sensitive loads; reserve Max for genuinely frontier problems — it can overthink on routine ones. Low and Medium are respected strictly: raise effort rather than prompting around shallow reasoning. Use a large response length (64k+) at Extra High/Max.',
+    },
+    {
+        pattern: /^claude-(opus|sonnet)-4-6/,
+        hint: 'Defaults to High — set effort explicitly to avoid unexpected latency. Medium is the recommended default (best speed/cost/performance balance); Low suits high-volume or latency-sensitive work; High when quality beats speed; Max for unconstrained spending. This generation has no Extra High tier (it is sent as Max). None disables thinking; unchecking Adaptive Thinking switches to manual budgets instead.',
+    },
+];
+
+const CLAUDE_EFFORT_HINT_DEFAULT = 'Auto uses the model default; None disables thinking where the model allows it. Models on the budget system (4.5 and earlier) allocate a portion of response length as a thinking budget (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%); Opus 4.5 also sends effort and tops out at High.';
+
+/**
+ * Resolve the Reasoning Effort guidance text for a Claude model.
+ * @param {string} model Model identifier
+ * @returns {string} HTML hint text
+ */
+function getClaudeEffortHint(model) {
+    const name = String(model ?? '');
+    return CLAUDE_EFFORT_HINTS.find(entry => entry.pattern.test(name))?.hint ?? CLAUDE_EFFORT_HINT_DEFAULT;
 }
 
 /**
@@ -6142,12 +6190,21 @@ async function onModelChange() {
         oai_settings.openai_max_tokens = Math.min(oai_settings.openai_max_tokens, claudeCaps.maxOutput);
         $('#openai_max_tokens').val(oai_settings.openai_max_tokens);
 
-        // Adaptive thinking is the only mode 4.6+ accept: manual budget_tokens is a
-        // 400. Leave the setting alone (presets carry it) but stop offering a choice.
-        $('#claude_use_adaptive_thinking').prop('disabled', claudeCaps.adaptiveThinking);
-        $('#claude_use_adaptive_thinking').closest('label').attr('title', claudeCaps.adaptiveThinking
+        // The checkbox stays live wherever unchecking it means something: on 4.6
+        // it picks the deprecated manual budgets over adaptive, and on Opus 5 /
+        // Sonnet 5 it disables thinking outright (type: disabled, effort kept).
+        // Opus 4.7/4.8 accept only adaptive and Fable 5 cannot stop thinking at
+        // all, so the box is forced on there. Presets carry the setting anyway.
+        const thinkingLocked = claudeCaps.adaptiveThinking && !claudeCaps.thinkingToggle;
+        $('#claude_use_adaptive_thinking').prop('disabled', thinkingLocked);
+        $('#claude_use_adaptive_thinking').closest('label').attr('title', thinkingLocked
             ? 'This model only supports adaptive thinking; manual thinking budgets are rejected by the API.'
-            : '');
+            : (claudeCaps.thinkingToggle
+                ? 'Unchecking disables thinking entirely (type: disabled); the effort level still applies to the response.'
+                : ''));
+
+        // Per-model effort guidance under the Reasoning Effort dropdown.
+        $('#claude_reasoning_effort_hint').html(getClaudeEffortHint(value));
 
         $('#openai_reverse_proxy').attr('placeholder', 'https://api.anthropic.com/v1');
 

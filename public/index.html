@@ -2259,17 +2259,9 @@
                                             <strong class="toggle-description justifyLeft marginBot5" data-source="openrouter">
                                                 Request model reasoning = Off with Reasoning Effort = Minimum disables reasoning entirely on models that support that, but can cause errors with some models.
                                             </strong>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Max is supported on all 4.6 and newer models. Opus/Sonnet 4.6 have no Extra High tier (it is sent as Max there), and Opus 4.5 tops out at High.">
-                                                Max is supported on all 4.6 and newer models. Opus/Sonnet 4.6 have no Extra High tier (it is sent as Max there), and Opus 4.5 tops out at High.
-                                            </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Auto uses default (high) effort.">
-                                                Auto uses default (high) effort.
-                                            </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="None disables thinking where the model allows it. Sonnet 5 accepts it at any effort, Opus 5 only at high or below, and Fable 5 always thinks.">
-                                                None disables thinking where the model allows it. Sonnet 5 accepts it at any effort, Opus 5 only at high or below, and Fable 5 always thinks.
-                                            </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Older models (4.5 and earlier) also allocate a portion of response length as a thinking budget (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%).">
-                                                Older models (4.5 and earlier) also allocate a portion of response length as a thinking budget (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%).
+                                            <!-- Populated per-model by getClaudeEffortHint() in openai.js on model change. -->
+                                            <div id="claude_reasoning_effort_hint" class="toggle-description justifyLeft marginBot5" data-source="claude">
+                                                Auto uses the model default; None disables thinking where the model allows it.
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai">
                                                 <span data-i18n="Sets a dynamic reasoning depth level for thinking (Flash 3/Pro 3). High and low are supported by both, minimal and medium are Flash 3 only. Auto lets the model decide.">
@@ -2306,7 +2298,7 @@
                                             <span>Adaptive Thinking</span>
                                         </label>
                                         <div class="toggle-description justifyLeft marginBot5">
-                                            Uses adaptive thinking (<code>type: adaptive</code>) instead of the budget_tokens system. Forced on and greyed out for Sonnet/Opus 4.6 and newer, which reject manual thinking budgets outright; it only applies to Opus 4.5 and earlier.
+                                            Uses adaptive thinking (<code>type: adaptive</code>) instead of the budget_tokens system. On Sonnet/Opus 4.6, unchecking falls back to the deprecated (but working) manual budgets. On Opus 5 and Sonnet 5, unchecking disables thinking entirely (<code>type: disabled</code>) while the effort level still shapes the response — Opus 5 only accepts this at High effort or below, so Extra High/Max are lowered to High. Forced on and greyed out for Opus 4.7/4.8 (adaptive is their only thinking shape) and Fable 5 (always thinks); Opus 4.5 and earlier are budget-only regardless.
                                         </div>
                                     </div>
                                     <div class="range-block" data-source="claude">

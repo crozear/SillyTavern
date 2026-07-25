@@ -425,7 +425,7 @@ const CLAUDE_EFFORT_HINTS = [
     },
     {
         pattern: /^claude-opus-4-6/,
-        hint: 'The strongest writer of the Opus line on the UGI benchmark, and there effort does matter: High and Max score best, Medium sits close behind, Low a few points back. Several roleplayers still swear by Low, finding heavy thinking thickens its purple prose and makes swipes samey — worth trying both ends. Anthropic\'s own recommendation is Medium. The most permissive current Opus for dark content. No Extra High tier (sent as Max). None disables thinking; unchecking Adaptive Thinking switches to the deprecated manual budgets.',
+        hint: 'The strongest writer of the Opus line on the UGI benchmark, and there effort does matter: High and Max score best, Medium sits close behind, Low a few points back. Several roleplayers still swear by Low, finding heavy thinking thickens its purple prose and makes swipes samey — but that is a prose finding from short scenes. With heavy summaries and lorebook injection, Medium and up gives the model a pass to reconcile conflicting entries before it writes. Anthropic\'s own recommendation is Medium. The most permissive current Opus for dark content. No Extra High tier (sent as Max). None disables thinking; unchecking Adaptive Thinking switches to the deprecated manual budgets.',
     },
     {
         pattern: /^claude-sonnet-4-6/,

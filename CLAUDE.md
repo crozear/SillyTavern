@@ -85,9 +85,19 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Group chats: modified `isValidImageUrl` null guard
 - Various `// @ts-ignore` additions for toastr calls
 
+### 7. Claude "Flex" = Message Batches API (async, ~50% cost)
+Service tier `flex` + Claude + an `sk-ant` proxy password routes generation through Anthropic's batch API instead of a blocking request.
+- `isClaudeFlexBatchEligible()` (openai.js) is the single gate — also forces non-streaming and excludes group chats
+- `public/scripts/claude-batch.js` — detached tracker: placeholder message → poller → delivery into the origin chat (live, or on `CHAT_CHANGED` if you navigated away)
+- Backend routes `claude-batch/{submit,status,result,ack,cancel,list}`; jobs persisted in `claude-batches.json` so reloads/restarts resume
+- `buildClaudeRequestBody()` was extracted from `sendClaudeRequest` so sync + batch send identical bodies — **high upstream-merge conflict risk**
+- Config: `claude.batchFlex.{enabled,pollIntervalMs,maxWaitMinutes}`; the reverse proxy needs matching batch routes
+
 ## Code Style
 
-**Do NOT run lint/eslint to verify changes** — it does not work in Claude Code sessions in this environment despite being installed via npm. The user runs it manually afterwards. Skip any lint verification step.
+**Do NOT run lint/eslint to verify changes** — it does not work in Claude Code sessions in this environment despite being installed via npm.
+The user runs it manually afterwards. Skip any lint verification step.
+Verify edits with `node --check <file>` instead — works on frontend ESM and backend files alike.
 
 Key rules:
 - Single quotes, semicolons required, 4-space indentation
@@ -115,6 +125,12 @@ When modifying **frontend settings**:
 - UI controls go in `public/index.html` with `data-source` attributes controlling which providers show them
 - Setting binding is in `public/scripts/openai.js` in the `settingsToUpdate` object
 - Default values go in `default_settings` in the same file
+
+**Frontend gotchas:**
+- `public/script.js` and `public/scripts/*.js` import each other circularly — this only works because bindings are dereferenced inside functions, never at module top level
+- `saveReply({ fromStreaming: true })` renders the message but suppresses `MESSAGE_RECEIVED`/`CHARACTER_MESSAGE_RENDERED` — use it for placeholders so TTS/translate don't fire on them
+- Put a feature's enablement in one exported predicate and reuse it; duplicated conditions across `stream`, `isStreamingEnabled()`, and request paths drift apart
+
 
 ## Skills (Slash Commands)
 
@@ -159,6 +175,15 @@ These skills are available via the `Skill` tool. Check before any response — i
 2. **Implementation skills second** — `frontend-design`, `feature-dev`
 
 `brainstorming` always leads to `writing-plans`, which leads to `subagent-driven-development` or `executing-plans`.
+
+## Reverse Proxy (sibling project)
+
+Claude traffic always routes through `C:\Users\brend\Desktop\claude-code-proxy` (registered additional working directory, editable). Plain Node HTTP, no Express — routing is a chain of `pathname.match(...)` checks in `server.js`.
+- Auth: OAuth (subscription) by default; an `sk-ant-…` proxy password from ST passes through as `x-api-key`. Never send the OAuth betas (`oauth-2025-04-20`, `claude-code-*`) on an API-key request.
+- URLs may be preset-scoped (`/v1/<preset>/messages`) — match both forms when adding routes.
+- Tests: `npx jest`. **2 pre-existing failures in `ClaudeRequest.test.js` (`res.writeHead is not a function`) are unrelated** — confirm against a clean checkout before chasing them.
+- nock gotcha: header values come back as strings, not arrays — assert `String(headers['x-api-key'])`.
+
 
 ## Merging Upstream
 

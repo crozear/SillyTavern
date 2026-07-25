@@ -350,6 +350,34 @@ function getClaudeUiCapabilities(model) {
 }
 
 /**
+ * The Claude model dropdown as index.html ships it, captured once before the
+ * auto-fetched model list overwrites it. Anthropic's /models endpoint returns
+ * bare IDs, so without this the hand-maintained labels — the "(Retiring MM/DD)"
+ * suffixes especially — are lost the moment the user connects.
+ * @type {Map<string, string>|null} Model ID to display label
+ */
+let claudeStaticModels = null;
+
+/**
+ * Resolve (and cache) the curated Claude model options from the static markup.
+ * @returns {Map<string, string>} Model ID to display label, in markup order
+ */
+function getClaudeStaticModels() {
+    if (!claudeStaticModels) {
+        claudeStaticModels = new Map();
+        $('#model_claude_select option').each(function () {
+            const id = String($(this).val() ?? '').trim();
+            const label = String($(this).text() ?? '').trim();
+            if (id && label) {
+                claudeStaticModels.set(id, label);
+            }
+        });
+    }
+
+    return claudeStaticModels;
+}
+
+/**
  * Per-model guidance shown under the Reasoning Effort dropdown, condensed from
  * Anthropic's recommended-effort docs. Matched most-specific-first; unknown and
  * pre-4.6 models fall back to the manual thinking-budget explanation.
@@ -2679,15 +2707,31 @@ function saveModelList(data) {
 
     if (oai_settings.chat_completion_source == chat_completion_sources.CLAUDE) {
         const select = $('#model_claude_select');
-        select.find('optgroup').empty();
+        // Capture the curated markup BEFORE anything is emptied: index.html carries
+        // retirement dates and the alias entries the API doesn't always list.
+        const staticModels = getClaudeStaticModels();
 
-        model_list.forEach((model) => {
-            select.find('optgroup').append(new Option(model.id, model.id));
-        });
-
+        // A failed or empty fetch must not leave the user with an empty dropdown.
         if (model_list.length > 0) {
-            const selectedModel = model_list.find(model => model.id === oai_settings.claude_model);
-            if (!selectedModel) {
+            const fetchedIds = new Set(model_list.map(model => model.id));
+            const primaryGroup = select.find('optgroup').first();
+            select.find('optgroup').not(primaryGroup).remove();
+            primaryGroup.empty();
+
+            model_list.forEach((model) => {
+                primaryGroup.append(new Option(staticModels.get(model.id) ?? model.id, model.id));
+            });
+
+            // Aliases and older snapshots the key can't see stay reachable rather
+            // than silently vanishing (and taking a saved selection with them).
+            const unlisted = [...staticModels].filter(([id]) => !fetchedIds.has(id));
+            if (unlisted.length) {
+                const otherGroup = $('<optgroup></optgroup>').attr('label', 'Not listed by the API');
+                unlisted.forEach(([id, label]) => otherGroup.append(new Option(label, id)));
+                select.append(otherGroup);
+            }
+
+            if (!select.find(`option[value="${oai_settings.claude_model}"]`).length) {
                 oai_settings.claude_model = model_list[0].id;
             }
             select.val(oai_settings.claude_model).trigger('change');

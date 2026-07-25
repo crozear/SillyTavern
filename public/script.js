@@ -5393,7 +5393,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         // so the user can keep working while the batch cooks. Falls through to the
         // normal request path if the batch isn't eligible or the submission fails.
         if (main_api === 'openai' && !isImpersonate && !isContinue && type !== 'quiet' && type !== 'swipe') {
-            const batchOutcome = await startClaudeBatch(type, generate_data);
+            const batchOutcome = await startClaudeBatch(type, generate_data, { jsonSchema });
             if (batchOutcome === 'queued') {
                 return { claudeBatchQueued: true };
             }

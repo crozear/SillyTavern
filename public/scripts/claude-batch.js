@@ -12,7 +12,7 @@ import {
     updateMessageBlock,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
-import { getClaudeBatchRequestExtras, isClaudeFlexBatchEligible } from './openai.js';
+import { createGenerationParameters, getChatCompletionModel, getClaudeBatchRequestExtras, isClaudeFlexBatchEligible, oai_settings } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
 import { t } from './i18n.js';
@@ -74,10 +74,11 @@ function postBatch(path, body) {
  * Submits a generation as a Claude batch and returns immediately, leaving a
  * placeholder message in the chat that gets filled in when the batch finishes.
  * @param {string} type Generation type
- * @param {object} generateData Fully-built generation payload
+ * @param {object} generateData Generation payload from Generate() — carries the prompt, not the API body
+ * @param {import('../script.js').AdditionalRequestOptions} [options] Additional request options
  * @returns {Promise<'queued'|'ineligible'>} 'ineligible' means: run the normal request instead
  */
-export async function startClaudeBatch(type, generateData) {
+export async function startClaudeBatch(type, generateData, options = {}) {
     // Eligibility (source/tier/key/group) lives in isClaudeFlexBatchEligible so that
     // this check, the `stream` flag, and isStreamingEnabled can never disagree.
     if (!isClaudeFlexBatchEligible() || NON_BATCHABLE_TYPES.has(type)) {
@@ -87,12 +88,25 @@ export async function startClaudeBatch(type, generateData) {
     const chatId = getCurrentChatId();
     let response;
 
+    // Generate() only hands over `{ prompt, … }`; the actual API body is assembled
+    // by sendOpenAIRequest. Build it the same way here (including the settings-ready
+    // event) so a batched request is byte-identical to a synchronous one.
+    let generate_data;
+    try {
+        const model = getChatCompletionModel(oai_settings);
+        ({ generate_data } = await createGenerationParameters(oai_settings, model, type, generateData?.prompt, options));
+        await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
+    } catch (error) {
+        console.error('Claude batch parameters could not be built, falling back to a normal request.', error);
+        return 'ineligible';
+    }
+
     try {
         response = await fetch(`${API_BASE}/submit`, {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ...generateData,
+                ...generate_data,
                 stream: false,
                 batch_chat_id: chatId ?? null,
                 batch_character_name: name2,

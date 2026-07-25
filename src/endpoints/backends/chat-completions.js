@@ -1491,7 +1491,7 @@ async function consumeAndForwardClaudeStream(fetchResponse, expressResponse, wor
  * submit endpoint so both paths produce byte-identical request shapes.
  * @param {import('express').Request} request Express request
  * @param {string} apiKey Resolved API key (or proxy password) for the x-api-key header
- * @returns {{ requestBody: any, fetchHeaders: Record<string, string> }}
+ * @returns {{ requestBody: any, fetchHeaders: Record<string, string>, useTools: boolean, useWebSearch: boolean }}
  */
 function buildClaudeRequestBody(request, apiKey) {
     const { enableSystemPromptCache, cachingAtDepth, ttl: cacheTTL } = resolveClaudeCachingConfig(request);
@@ -1670,7 +1670,7 @@ function buildClaudeRequestBody(request, apiKey) {
         ...additionalHeaders,
     };
 
-    return { requestBody, fetchHeaders };
+    return { requestBody, fetchHeaders, useTools, useWebSearch };
 }
 
 async function sendClaudeRequest(request, response) {
@@ -1691,7 +1691,7 @@ async function sendClaudeRequest(request, response) {
             controller.abort();
         });
 
-        const { requestBody, fetchHeaders } = buildClaudeRequestBody(request, apiKey);
+        const { requestBody, fetchHeaders, useTools, useWebSearch } = buildClaudeRequestBody(request, apiKey);
 
         const taskBudgetEnabled = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled;
         const useAgenticLoop = taskBudgetEnabled && (useTools || useWebSearch);
@@ -3589,6 +3589,12 @@ router.post('/claude-batch/submit', async function (request, response) {
             return response.status(409).send({ ineligible: true, reason: 'Batch mode requires an sk-ant API key.' });
         }
 
+        // The batch body is built from the same payload a synchronous /generate
+        // takes, so a caller that skipped assembling it can't produce a valid batch.
+        if (!Array.isArray(request.body.messages)) {
+            return response.status(409).send({ ineligible: true, reason: 'Request is missing a messages array.' });
+        }
+
         const { requestBody } = buildClaudeRequestBody(request, apiKey);
         delete requestBody.stream; // streaming is not allowed inside a batch
 
@@ -3629,7 +3635,7 @@ router.post('/claude-batch/submit', async function (request, response) {
             ...getClaudeBatchPollSettings(),
         });
     } catch (error) {
-        console.error(color.red(`Claude batch submit error: ${error}`));
+        console.error(color.red(`Claude batch submit error: ${error?.stack || error}`));
         return response.status(500).send({ error: true });
     }
 });

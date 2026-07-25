@@ -397,35 +397,50 @@ function isClaudeModelListed(id, fetchedIds) {
 }
 
 /**
- * Per-model guidance shown under the Reasoning Effort dropdown, condensed from
- * Anthropic's recommended-effort docs. Matched most-specific-first; unknown and
- * pre-4.6 models fall back to the manual thinking-budget explanation.
+ * Per-model guidance shown under the Reasoning Effort dropdown. API facts come
+ * from Anthropic's recommended-effort docs; the advice mixes those with
+ * roleplay reports from r/SillyTavernAI and r/claudexplorers, since the
+ * published recommendations are written for coding and agentic runs (Extra
+ * High/Max exist for 30-minute tool loops with million-token budgets, which no
+ * chat turn resembles). Matched most-specific-first; unknown and pre-4.6
+ * models fall back to the manual thinking-budget explanation.
  * @type {{ pattern: RegExp, hint: string }[]}
  */
 const CLAUDE_EFFORT_HINTS = [
     {
-        pattern: /^claude-(fable|mythos)-5/,
-        hint: 'Effort is the primary intelligence/latency/cost control on Fable 5. High (default) suits most tasks and Extra High the most capability-sensitive work; Medium and Low still perform well for routine tasks — often above Extra High on prior models. At High and above, raise the response length: it is a hard cap on thinking plus reply. Fable 5 always thinks, so None has no effect.',
+        pattern: /^claude-fable-5/,
+        hint: 'Roleplay consensus is Medium: effort mostly multiplies thinking tokens, and at $50/M ($25/M with Batch processing) output the higher tiers only pay off when a reply genuinely needs the depth. Its prose reads cleaner than Opus — fewer clipped-sentence chains, em-dashes, and stock phrases — and it moves plot well, but it is the most safety-aligned Claude: dark or explicit scenes fare far worse than on Opus 4.6. Response length is a hard cap on thinking <i>plus</i> the reply, so keep it generous or a long think eats the prose. Fable 5 always thinks; None has no effect.',
     },
     {
         pattern: /^claude-opus-5/,
-        hint: 'Defaults to High. Step up to Extra High for demanding coding and agentic work, or Max for unconstrained token spending; use Low and Medium liberally for cost and speed where quality holds. Effort controls thinking volume, not reply length. Thinking can only be disabled at High or below — with thinking off, Extra High/Max are lowered to High. Use a large response length at Extra High/Max.',
+        hint: 'High is the default, but Low and Medium hold quality at a fraction of the cost and latency — a good home for ordinary turns, with High for scenes that need to track a lot of history. Effort does not shorten the reply, only the thinking: Opus 5 writes long by default, so control length in your prompt instead. Extra High and Max are built for long agentic runs and mainly add wait time here. Thinking only turns off at High or below (Extra High/Max are lowered to High), and thinking on at Low generally beats thinking off.',
     },
     {
         pattern: /^claude-sonnet-5/,
-        hint: 'Defaults to High (complex reasoning, coding, agentic work). Extra High is for the hardest coding and agentic tasks; Medium is the cost-saving step-down, comparable to Sonnet 4.6 at High; Low suits high-volume or latency-sensitive chat; Max is for unconstrained spending. Thinking can be disabled at any effort level.',
+        hint: 'High is the default; Anthropic explicitly points chat and other non-coding use at Low, and Medium is the cost step-down that matches Sonnet 4.6 at High — both are good for fast back-and-forth. Early roleplay reports find its voice blander than Sonnet 4.5\'s, which effort will not fix. Extra High and Max target the hardest coding and agentic work and rarely pay off in a roleplay turn. Thinking can be disabled at any effort level.',
     },
     {
         pattern: /^claude-opus-4-(7|8)/,
-        hint: 'Defaults to High. Start with Extra High for coding and agentic work, High for other intelligence-sensitive tasks, and Medium for cost-sensitive loads; reserve Max for genuinely frontier problems — it can overthink on routine ones. Low and Medium are respected strictly: raise effort rather than prompting around shallow reasoning. Use a large response length (64k+) at Extra High/Max.',
+        hint: 'RP reports are lukewarm: little gain over Opus 4.6 for a higher token burn and stricter content classifiers. On the UGI writing benchmark, 4.8 barely moves with effort (Low through Max within ~2 points) while 4.7 is the weakest writer of the Opus line and needs Max just to close part of the gap. Heavy thinking makes these reason in circles or over-prose, and Low/Medium are obeyed strictly (the model advances the scene less on its own) — Medium is the sensible landing spot.',
     },
     {
-        pattern: /^claude-(opus|sonnet)-4-6/,
-        hint: 'Defaults to High — set effort explicitly to avoid unexpected latency. Medium is the recommended default (best speed/cost/performance balance); Low suits high-volume or latency-sensitive work; High when quality beats speed; Max for unconstrained spending. This generation has no Extra High tier (it is sent as Max). None disables thinking; unchecking Adaptive Thinking switches to manual budgets instead.',
+        pattern: /^claude-opus-4-6/,
+        hint: 'The strongest writer of the Opus line on the UGI benchmark, and there effort does matter: High and Max score best, Medium sits close behind, Low a few points back. Several roleplayers still swear by Low, finding heavy thinking thickens its purple prose and makes swipes samey — worth trying both ends. Anthropic\'s own recommendation is Medium. The most permissive current Opus for dark content. No Extra High tier (sent as Max). None disables thinking; unchecking Adaptive Thinking switches to the deprecated manual budgets.',
+    },
+    {
+        pattern: /^claude-sonnet-4-6/,
+        hint: 'Anthropic recommends Medium as the everyday setting — best balance of speed, cost, and quality — with Low for fast, high-volume chat and High when quality beats speed (High is the default; set effort explicitly to avoid unexpected latency). No Extra High tier (it is sent as Max). None disables thinking; unchecking Adaptive Thinking switches to the deprecated manual budgets instead.',
+    },
+    {
+        pattern: /^claude-sonnet-4-5/,
+        hint: 'No effort parameter here — levels set a manual thinking budget as a share of response length (min 1024; Low 10%, Medium 25%, High 50%, Extra High 75%, Max 95%). A roleplay favorite: often called the best pure writer of the line, strongest in dialogue-driven scenes, better storyteller than Opus even where Opus is the richer stylist. Keep thinking at None: the UGI benchmark scores its writing higher and more original with thinking off, matching how most players run it. Its known vices (rushing tension to a resolution, narrating {{user}}\'s past back at them) respond to prompting, not effort.',
     },
 ];
 
 const CLAUDE_EFFORT_HINT_DEFAULT = 'Auto uses the model default; None disables thinking where the model allows it. Models on the budget system (4.5 and earlier) allocate a portion of response length as a thinking budget (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%); Opus 4.5 also sends effort and tops out at High.';
+
+/** Applies to every model that takes an effort level, so it is appended rather than repeated. */
+const CLAUDE_EFFORT_HINT_SHARED = ' Changing effort mid-chat invalidates the prompt cache, so pick a level and stay on it.';
 
 /**
  * Resolve the Reasoning Effort guidance text for a Claude model.
@@ -434,7 +449,8 @@ const CLAUDE_EFFORT_HINT_DEFAULT = 'Auto uses the model default; None disables t
  */
 function getClaudeEffortHint(model) {
     const name = String(model ?? '');
-    return CLAUDE_EFFORT_HINTS.find(entry => entry.pattern.test(name))?.hint ?? CLAUDE_EFFORT_HINT_DEFAULT;
+    const hint = CLAUDE_EFFORT_HINTS.find(entry => entry.pattern.test(name))?.hint;
+    return hint ? hint + CLAUDE_EFFORT_HINT_SHARED : CLAUDE_EFFORT_HINT_DEFAULT;
 }
 
 /**

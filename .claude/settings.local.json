@@ -37,7 +37,7 @@
       "PowerShell(npx eslint \"src/endpoints/backends/chat-completions.js\" \"src/prompt-converters.js\" \"public/scripts/openai.js\" 2>&1)"
     ]
   },
-  "model": "claude-opus-4-6",
+  "model": "claude-opus-5",
   "skillOverrides": {
     "update-config": "user-invocable-only",
     "keybindings-help": "user-invocable-only",

@@ -12,7 +12,7 @@ import {
     updateMessageBlock,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
-import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings } from './openai.js';
+import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
 import { t } from './i18n.js';
@@ -80,11 +80,20 @@ function postBatch(path, body) {
  * @param {string} type Generation type
  * @param {object} generateData Generation payload from Generate() — carries the prompt, not the API body
  * @param {import('../script.js').AdditionalRequestOptions} [options] Additional request options
+ * @param {AbortSignal} [signal] Generation abort signal
  * @returns {Promise<'queued'|'sync'|'refused'>} 'sync' = run the normal request; 'refused' = abort, don't bill
  */
-export async function startClaudeBatch(type, generateData, options = {}) {
+export async function startClaudeBatch(type, generateData, options = {}, signal = null) {
     if (!isClaudeBatchModeOn() || ALWAYS_SYNC_TYPES.has(type)) {
         return 'sync';
+    }
+
+    // A batch detaches the instant it's submitted, so an abort raised while the prompt
+    // was still being assembled — the stop button, or Prompt Inspector's "Cancel
+    // generation" — has to be caught here. The synchronous path gets this for free by
+    // handing the signal to fetch; there's no in-flight request for it to cancel here.
+    if (signal?.aborted) {
+        return 'refused';
     }
 
     // Defensive only: Generate() already refuses these up front, with the toast, before
@@ -111,6 +120,12 @@ export async function startClaudeBatch(type, generateData, options = {}) {
         return 'refused';
     }
 
+    // Building the parameters awaits CHAT_COMPLETION_SETTINGS_READY listeners, so the
+    // user has had another window in which to cancel. Last check before it's billable.
+    if (signal?.aborted) {
+        return 'refused';
+    }
+
     try {
         response = await fetch(`${API_BASE}/submit`, {
             method: 'POST',
@@ -132,7 +147,7 @@ export async function startClaudeBatch(type, generateData, options = {}) {
         const detail = await response.json().catch(() => null);
         console.error('Claude batch submit error.', response.status, detail);
         toastr.error(
-            detail?.reason || t`Batch submission failed. Nothing was sent — uncheck Batch Processing to send normally.`,
+            detail?.reason || t`Batch submission failed. Nothing was sent — switch to another Claude model to generate normally.`,
             t`Batch Processing`,
             { timeOut: 15000, extendedTimeOut: 25000 },
         );
@@ -140,7 +155,7 @@ export async function startClaudeBatch(type, generateData, options = {}) {
     }
 
     const data = await response.json();
-    applyPollSettings(data);
+    applyServerSettings(data);
 
     const job = {
         jobId: data.jobId,
@@ -204,10 +219,14 @@ async function placeholderFor(job) {
 }
 
 /**
- * Reads poll cadence sent by the backend (sourced from config.yaml).
+ * Reads the batch settings sent by the backend (sourced from config.yaml): the
+ * master switch plus the poll cadence.
  * @param {object} data Response payload from submit/list
  */
-function applyPollSettings(data) {
+function applyServerSettings(data) {
+    if (typeof data?.batchEnabled === 'boolean') {
+        setClaudeBatchServerEnabled(data.batchEnabled);
+    }
     if (Number.isFinite(data?.pollIntervalMs)) {
         pollIntervalMs = Math.max(5000, data.pollIntervalMs);
     }
@@ -486,7 +505,7 @@ export async function initClaudeBatchTracker() {
         }
 
         const data = await response.json();
-        applyPollSettings(data);
+        applyServerSettings(data);
 
         for (const stored of data?.jobs ?? []) {
             if (stored.status === 'ready' && stored.resultReply) {

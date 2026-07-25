@@ -5410,11 +5410,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         console.debug(`pushed prompt bits to itemizedPrompts array. Length is now: ${itemizedPrompts.length}`);
 
-        // Batch Processing is served by the Message Batches API: submit and detach, so
+        // Batch-only models go through the Message Batches API: submit and detach, so
         // the user can keep working while the batch cooks. A request that can't be
         // batched is refused outright rather than silently sent at full price.
         if (main_api === 'openai') {
-            const batchOutcome = await startClaudeBatch(type, generate_data, { jsonSchema });
+            const batchOutcome = await startClaudeBatch(type, generate_data, { jsonSchema }, abortController?.signal);
             if (batchOutcome === 'queued') {
                 return { claudeBatchQueued: true };
             }

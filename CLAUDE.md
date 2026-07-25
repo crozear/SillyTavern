@@ -85,11 +85,14 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Group chats: modified `isValidImageUrl` null guard
 - Various `// @ts-ignore` additions for toastr calls
 
-### 7. Claude "Flex" = Message Batches API (async, ~50% cost)
-Service tier `flex` + Claude + an `sk-ant` proxy password routes generation through Anthropic's batch API instead of a blocking request.
-- `isClaudeFlexBatchEligible()` (openai.js) is the single gate — also forces non-streaming and excludes group chats
+### 7. Batch-only Claude models = Message Batches API (async, ~50% cost)
+Fable 5 is **batch-only**: selecting it routes generation through Anthropic's batch API instead of a blocking request. There is no UI toggle — the model is the switch, and `claude.batchFlex.enabled: false` in config.yaml is the only opt-out.
+- `isClaudeBatchModeOn()` (openai.js) is the single gate: Claude source + `CLAUDE_BATCH_ONLY_MODELS` (`/^claude-fable-5/`) + the server's `batchFlex.enabled`. It also forces non-streaming.
+- Server flag reaches the frontend via `batchEnabled` on the `claude-batch/{submit,list}` responses → `setClaudeBatchServerEnabled()`. Defaults to **on** when unknown, so a failed fetch can never silently bill a batch-only model at full sync price.
+- `getClaudeBatchBlocker()` refuses (never downgrades to a paid sync call) when there's no `sk-ant` proxy password, in group chats, or on impersonate
+- Generate() also passes `abortController.signal` into `startClaudeBatch()` — a cancel raised during prompt assembly (stop button, Prompt Inspector's "Cancel generation") has no in-flight request to abort, so it must be caught before submit
 - `public/scripts/claude-batch.js` — detached tracker: placeholder message → poller → delivery into the origin chat (live, or on `CHAT_CHANGED` if you navigated away)
-- Backend routes `claude-batch/{submit,status,result,ack,cancel,list}`; jobs persisted in `claude-batches.json` so reloads/restarts resume
+- Backend routes `claude-batch/{submit,status,result,ack,cancel,list}`; jobs persisted in `claude-batches.json` so reloads/restarts resume. `CLAUDE_BATCH_MODELS` there mirrors the frontend regex.
 - `buildClaudeRequestBody()` was extracted from `sendClaudeRequest` so sync + batch send identical bodies — **high upstream-merge conflict risk**
 - Config: `claude.batchFlex.{enabled,pollIntervalMs,maxWaitMinutes}`; the reverse proxy needs matching batch routes
 

@@ -376,12 +376,14 @@ claude:
   # Disable to enforce legacy thinking mode (with thinking budget).
   # https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
   enableAdaptiveThinking: false
-  # "Flex" service tier = Message Batches API (asynchronous, 50% cost).
-  # When enabled and the Claude service tier is set to "flex" with an sk-ant API
-  # key, a single generation is submitted as a batch of one and polled until it
-  # completes (most finish < 1h, up to 24h). https://platform.claude.com/docs/en/build-with-claude/batch-processing
+  # Message Batches API (asynchronous, 50% cost). Batch-only models (Fable 5) are
+  # always sent this way: a single generation is submitted as a batch of one, with
+  # an sk-ant API key as the proxy password, and polled until it completes (most
+  # finish < 1h, up to 24h). There is no per-request toggle — the model is the
+  # switch. https://platform.claude.com/docs/en/build-with-claude/batch-processing
   batchFlex:
-    # Master switch. When false, "flex" behaves like a normal synchronous request.
+    # Master switch, and the only way to opt out. When false, batch-only models are
+    # sent as ordinary synchronous requests, at full price.
     enabled: true
     # How often the frontend polls a pending batch, in milliseconds.
     pollIntervalMs: 15000

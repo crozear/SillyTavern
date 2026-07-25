@@ -289,17 +289,36 @@ export const service_tier_types = {
 };
 
 /**
- * Models the batch discount is actually worth taking. Everything else is cheaper
- * on subscription usage than at 50% of the API price, so batching them would cost
- * more, not less. Fable 5 is the exception: it only bills at subscription rates on
- * the Max plan, so the API batch discount wins.
+ * Models that are batch-only. Batching every other Claude model would cost more,
+ * not less: they're cheaper on subscription usage than at 50% of the API price.
+ * Fable 5 is the exception — it only bills at subscription rates on the Max plan,
+ * so the batch discount always wins and there's no reason to ever send it
+ * synchronously. There's no per-request toggle: pick the model, get a batch.
+ * Keep in sync with CLAUDE_BATCH_MODELS in src/endpoints/backends/chat-completions.js.
  */
-const CLAUDE_BATCH_WORTH_IT_MODELS = /^claude-fable-5/;
+const CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/;
 
 /**
- * Whether the user has asked for Claude generations to go through the async
- * Message Batches API. This is *intent only* — it deliberately says nothing about
- * whether the request can actually be batched, so that an unbattable request is
+ * Server-side `claude.batchFlex.enabled`, relayed by the batch endpoints. Assumed
+ * on until the first response lands: guessing "off" would quietly send a Fable 5
+ * generation as a full-price synchronous request, which is the one outcome this
+ * whole path exists to prevent.
+ */
+let claudeBatchServerEnabled = true;
+
+/**
+ * Records the server's `claude.batchFlex.enabled` flag. Turning it off in
+ * config.yaml is the only way to take a batch-only model off the batch path.
+ * @param {boolean} enabled Whether the server has batch mode enabled
+ */
+export function setClaudeBatchServerEnabled(enabled) {
+    claudeBatchServerEnabled = Boolean(enabled);
+}
+
+/**
+ * Whether this generation goes through the async Message Batches API. Decided by
+ * the model alone (plus the config.yaml master switch) — it deliberately says
+ * nothing about whether the request *can* be batched, so that an unbatchable one is
  * refused outright rather than silently falling back to a full-price sync call.
  * Use `getClaudeBatchBlocker()` for that.
  * @param {object} [settings] Settings object (defaults to oai_settings)
@@ -307,12 +326,15 @@ const CLAUDE_BATCH_WORTH_IT_MODELS = /^claude-fable-5/;
  */
 export function isClaudeBatchModeOn(settings = oai_settings) {
     return settings.chat_completion_source === chat_completion_sources.CLAUDE
-        && Boolean(settings.claude_batch_processing);
+        && claudeBatchServerEnabled
+        && CLAUDE_BATCH_ONLY_MODELS.test(String(settings.claude_model ?? ''));
 }
 
 /**
  * Why the current request can't be batched, if it can't. Returning a reason means
  * the generation is refused — never quietly downgraded to a paid sync request.
+ * Since the model *is* the switch, the way out of every one of these is to pick a
+ * different Claude model (or disable claude.batchFlex in config.yaml).
  * `quiet` is the one exception (handled by the caller): it's extension-internal,
  * awaits a returned string, and is never triggered by hand.
  * @param {string} [type] Generation type
@@ -320,24 +342,20 @@ export function isClaudeBatchModeOn(settings = oai_settings) {
  * @returns {string|null} Human-readable reason, or null when batching is fine
  */
 export function getClaudeBatchBlocker(type, settings = oai_settings) {
-    if (!CLAUDE_BATCH_WORTH_IT_MODELS.test(String(settings.claude_model ?? ''))) {
-        return 'Batching is only cheaper for Fable 5 — other Claude models cost less on subscription usage than at 50% of the API price. Switch model or uncheck Batch Processing.';
-    }
-
     if (typeof settings.proxy_password !== 'string' || !settings.proxy_password.includes('sk-ant')) {
-        return 'Batch Processing needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount.';
+        return 'This model is batch-only, and the Message Batches API needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount — set a key, or switch model.';
     }
 
     // Group generation chains each member's reply into the next member's prompt,
     // which a detached batch can't satisfy.
     if (selected_group) {
-        return 'Group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Uncheck Batch Processing to generate here.';
+        return 'This model is batch-only, and group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Switch model to generate here.';
     }
 
     // Impersonation lands in the send textarea, not the chat, so there's nowhere to
     // park a placeholder and no safe way to deliver it an hour later.
     if (type === 'impersonate') {
-        return 'Impersonate can\'t be batched — its result goes to the input box, not the chat. Uncheck Batch Processing to use it.';
+        return 'This model is batch-only, and impersonate can\'t be batched — its result goes to the input box, not the chat. Switch model to use it.';
     }
 
     return null;
@@ -472,7 +490,6 @@ export const settingsToUpdate = {
     claude_task_budget_total: ['#claude_task_budget_total', 'claude_task_budget_total', false, false],
     claude_task_budget_max_iterations: ['#claude_task_budget_max_iterations', 'claude_task_budget_max_iterations', false, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
-    claude_batch_processing: ['#claude_batch_processing', 'claude_batch_processing', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     pro_reasoning_mode: ['#openai_pro_reasoning_mode', 'pro_reasoning_mode', true, false],
     openai_enable_caching: ['#openai_enable_caching', 'openai_enable_caching', true, false],
@@ -599,7 +616,6 @@ export const default_settings = {
     claude_task_budget_total: 64000,
     claude_task_budget_max_iterations: 25,
     word_replacement_enabled: true,
-    claude_batch_processing: false,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
     pro_reasoning_mode: false,
@@ -7634,11 +7650,6 @@ export function initOpenAI() {
 
     $('#openai_enable_caching').on('input', function () {
         oai_settings.openai_enable_caching = !!$(this).prop('checked');
-        saveSettingsDebounced();
-    });
-
-    $('#claude_batch_processing').on('input', function () {
-        oai_settings.claude_batch_processing = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

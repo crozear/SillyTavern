@@ -3503,7 +3503,7 @@ router.post('/word-replacements', function (request, response) {
 // Jobs are persisted per-user so a page reload / server restart can resume.
 // ---------------------------------------------------------------------------
 
-// Keep in sync with CLAUDE_FLEX_BATCH_MODELS in public/scripts/openai.js.
+// Keep in sync with CLAUDE_BATCH_ONLY_MODELS in public/scripts/openai.js.
 const CLAUDE_BATCH_MODELS = /^claude-fable-5/;
 
 function getClaudeBatchStorePath(directories) {
@@ -3593,9 +3593,12 @@ function formatClaudeUsageMeta(model, usage, extras = {}) {
     return meta;
 }
 
-// Frontend poller settings, so the interval and give-up window live in config.yaml.
-function getClaudeBatchPollSettings() {
+// Frontend batch settings, so the master switch, poll interval and give-up window
+// all live in config.yaml. `enabled` is what the frontend uses to decide whether a
+// batch-only model goes through the batch API at all — it's the only off switch.
+function getClaudeBatchClientSettings() {
     return {
+        batchEnabled: getConfigValue('claude.batchFlex.enabled', false, 'boolean'),
         pollIntervalMs: Math.max(5000, getConfigValue('claude.batchFlex.pollIntervalMs', 20000, 'number')),
         maxWaitMinutes: Math.max(1, getConfigValue('claude.batchFlex.maxWaitMinutes', 90, 'number')),
     };
@@ -3615,8 +3618,8 @@ router.post('/claude-batch/submit', async function (request, response) {
             return response.status(409).send({ ineligible: true, reason: 'Batch Processing needs an sk-ant API key as the proxy password. Nothing was sent.' });
         }
 
-        // Mirrors isClaudeFlexBatchEligible on the frontend: every other Claude model
-        // is cheaper on subscription usage than at half the API price, so batching it
+        // Mirrors isClaudeBatchModeOn on the frontend: every other Claude model is
+        // cheaper on subscription usage than at half the API price, so batching it
         // would be a net loss. Re-checked here so resumed/stale callers can't slip past.
         if (!CLAUDE_BATCH_MODELS.test(String(request.body.model ?? ''))) {
             return response.status(409).send({ ineligible: true, reason: `Batch mode is not enabled for ${request.body.model}.` });
@@ -3665,7 +3668,7 @@ router.post('/claude-batch/submit', async function (request, response) {
             batchId: job.batchId,
             customId,
             processing_status: data.processing_status,
-            ...getClaudeBatchPollSettings(),
+            ...getClaudeBatchClientSettings(),
         });
     } catch (error) {
         console.error(color.red(`Claude batch submit error: ${error?.stack || error}`));
@@ -3801,7 +3804,7 @@ router.post('/claude-batch/cancel', async function (request, response) {
 
 // List this user's persisted batch jobs (for resume on reload / restart).
 router.get('/claude-batch/list', function (request, response) {
-    return response.send({ jobs: readClaudeBatchJobs(request.user.directories), ...getClaudeBatchPollSettings() });
+    return response.send({ jobs: readClaudeBatchJobs(request.user.directories), ...getClaudeBatchClientSettings() });
 });
 
 router.post('/bias', async function (request, response) {

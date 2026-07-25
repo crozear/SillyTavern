@@ -1,0 +1,4 @@
+# Third-party extensions are gitignored local content (.gitignore:58), but eslint
+# does not read .gitignore, so it was linting them anyway — one installed extension
+# accounted for 4333 of this repo's 4365 lint errors and buried every real one.
+public/scripts/extensions/third-party/

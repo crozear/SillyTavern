@@ -98,9 +98,28 @@ Fable 5 is **batch-only**: selecting it routes generation through Anthropic's ba
 
 ## Code Style
 
-**Do NOT run lint/eslint to verify changes** — it does not work in Claude Code sessions in this environment despite being installed via npm.
-The user runs it manually afterwards. Skip any lint verification step.
-Verify edits with `node --check <file>` instead — works on frontend ESM and backend files alike.
+**`npm run lint` works — run it to verify changes.** It was previously believed broken here; the real cause was
+that every launcher (`Start.bat`, `UpdateAndStart.bat`, `UpdateForkAndStart.bat`) runs `npm install --omit=dev`,
+which *prunes* devDependencies rather than just skipping them, silently uninstalling eslint on every server start.
+Fixed by `include=dev` in `.npmrc` (npm treats a type listed in both `include` and `omit` as included).
+If eslint ever goes missing again, `npm install` restores it.
+
+Also use `node --check <file>` for a fast syntax-only check — works on frontend ESM and backend files alike.
+
+**Reading lint output:** the repo has ~34 pre-existing errors (mostly `key-spacing` from the deliberately
+column-aligned `WORD_REPLACEMENT_CONFIG` in `chat-completions.js`), so a non-zero exit does not mean you broke
+something. Judge your own changes by intersecting eslint's `--format json` output with the line ranges from
+`git diff -U0` — the total on its own is not a signal. Never run `--fix` repo-wide: it would reflow that alignment
+and thousands of untouched lines.
+
+`.eslintignore` excludes `public/scripts/extensions/third-party/` — gitignored extension code that eslint would
+otherwise lint (one installed extension alone produced 4333 errors and buried every real one).
+
+**Tests:** jest is not in `devDependencies`, so it needs npx *and* the ESM flag:
+`NODE_OPTIONS=--experimental-vm-modules npx jest tests/prompt-converters.test.js`. Without the flag it fails with
+`Cannot use import statement outside a module`. 3 failures in `prompt-converters.test.js` are pre-existing —
+the AI21/xAI/Mistral "returns empty array for non-array input" cases, which crash because
+`normalizeDeveloperRole()` has no null guard.
 
 Key rules:
 - Single quotes, semicolons required, 4-space indentation

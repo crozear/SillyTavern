@@ -2259,14 +2259,17 @@
                                             <strong class="toggle-description justifyLeft marginBot5" data-source="openrouter">
                                                 Request model reasoning = Off with Reasoning Effort = Minimum disables reasoning entirely on models that support that, but can cause errors with some models.
                                             </strong>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Max is Opus 4.6 and 4.7 only.">
-                                                Max is Opus 4.6 and 4.7 only.
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Max is Opus 4.6 and Opus 5 only. Sonnet 5, Fable 5 and Opus 4.7/4.8 top out at Extra High; anything higher is sent as their own ceiling.">
+                                                Max is Opus 4.6 and Opus 5 only. Sonnet 5, Fable 5 and Opus 4.7/4.8 top out at Extra High; anything higher is sent as their own ceiling.
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Auto uses default (high) effort.">
                                                 Auto uses default (high) effort.
                                             </div>
-                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 90%).">
-                                                Older models: allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 90%).
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="None disables thinking where the model allows it. Sonnet 5 accepts it at any effort, Opus 5 only at high or below, and Fable 5 always thinks.">
+                                                None disables thinking where the model allows it. Sonnet 5 accepts it at any effort, Opus 5 only at high or below, and Fable 5 always thinks.
+                                            </div>
+                                            <div class="toggle-description justifyLeft marginBot5" data-source="claude" data-i18n="Older models (4.5 and earlier): allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%).">
+                                                Older models (4.5 and earlier): allocates a portion of response length for thinking (min: 1024, low: 10%, medium: 25%, high: 50%, xhigh: 75%, max: 95%).
                                             </div>
                                             <div class="toggle-description justifyLeft marginBot5" data-source="makersuite,vertexai">
                                                 <span data-i18n="Sets a dynamic reasoning depth level for thinking (Flash 3/Pro 3). High and low are supported by both, minimal and medium are Flash 3 only. Auto lets the model decide.">
@@ -2303,7 +2306,7 @@
                                             <span>Adaptive Thinking</span>
                                         </label>
                                         <div class="toggle-description justifyLeft marginBot5">
-                                            When checked, Sonnet 4.6/Opus 4.6|4.7 uses adaptive thinking (<code>type: adaptive</code>). When unchecked, uses the budget_tokens system instead.
+                                            Uses adaptive thinking (<code>type: adaptive</code>) instead of the budget_tokens system. Forced on and greyed out for Sonnet/Opus 4.6 and newer, which reject manual thinking budgets outright; it only applies to Opus 4.5 and earlier.
                                         </div>
                                     </div>
                                     <div class="range-block" data-source="claude">
@@ -2312,7 +2315,7 @@
                                             <span>Task Budget</span>
                                         </label>
                                         <div class="toggle-description justifyLeft marginBot5">
-                                            Advisory token budget for Opus 4.7 agentic loops. The model self-regulates to finish gracefully as the budget is consumed.
+                                            Advisory token budget for agentic loops on Opus 4.7 and later (4.7, 4.8, Opus 5, Sonnet 5, Fable 5). The model self-regulates to finish gracefully as the budget is consumed. Ignored on older models.
                                         </div>
                                         <div id="claude_task_budget_total_block"  data-source="claude" style="display: none;">
                                             <label for="claude_task_budget_total" class="widthFreeExpand">

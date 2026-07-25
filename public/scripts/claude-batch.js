@@ -323,7 +323,9 @@ async function pollJob(jobId) {
         const result = await resultResponse.json();
         if (result?.resultType !== 'succeeded' || !result?.reply) {
             untrack(jobId);
-            await failJob(job, t`Batch ${result?.resultType ?? 'failed'}: no reply was produced.`);
+            // A refusal carries a reason worth showing verbatim (stop_details.category).
+            const reason = result?.error?.message;
+            await failJob(job, reason || t`Batch ${result?.resultType ?? 'failed'}: no reply was produced.`);
             return;
         }
 

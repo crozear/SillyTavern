@@ -299,6 +299,50 @@ export const service_tier_types = {
 const CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/;
 
 /**
+ * The subset of CLAUDE_MODEL_CAPABILITIES the UI needs, matched most-specific-first.
+ * The frontend can't import from src/, and the server stays authoritative for what
+ * actually goes on the wire — this table only drives sliders and control states.
+ * Keep in sync with CLAUDE_MODEL_CAPABILITIES in src/constants.js.
+ * @type {{ pattern: RegExp, caps: { contextWindow?: number, maxOutput?: number, adaptiveThinking?: boolean, highResImages?: boolean, inputPrice?: number } }[]}
+ */
+const CLAUDE_UI_CAPABILITIES = [
+    { pattern: /^claude-(fable|mythos)-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.00001 } },
+    { pattern: /^claude-opus-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000005 } },
+    { pattern: /^claude-sonnet-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000002 } },
+    { pattern: /^claude-opus-4-(7|8)/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000005 } },
+    { pattern: /^claude-(opus|sonnet)-4-6/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, inputPrice: 0.000005 } },
+    { pattern: /^claude-sonnet-4-5/, caps: { contextWindow: 1000000, maxOutput: 64000, inputPrice: 0.000003 } },
+    { pattern: /^claude-opus-4-5/, caps: { maxOutput: 64000, inputPrice: 0.000005 } },
+    { pattern: /^claude-haiku-4-5/, caps: { maxOutput: 64000, inputPrice: 0.000001 } },
+    { pattern: /^claude-opus-4/, caps: { maxOutput: 32000, inputPrice: 0.000015 } },
+    { pattern: /^claude-sonnet-4/, caps: { maxOutput: 64000, inputPrice: 0.000003 } },
+    { pattern: /^claude-3-7/, caps: { maxOutput: 64000, inputPrice: 0.000003 } },
+    { pattern: /^claude-3-5-haiku/, caps: { maxOutput: 8192, inputPrice: 0.0000008 } },
+    { pattern: /^claude-3-5/, caps: { maxOutput: 8192, inputPrice: 0.000003 } },
+    { pattern: /^claude-3-opus/, caps: { maxOutput: 4096, inputPrice: 0.000015 } },
+    { pattern: /^claude-3/, caps: { maxOutput: 4096, inputPrice: 0.00000025 } },
+];
+
+const CLAUDE_UI_DEFAULT_CAPABILITIES = {
+    contextWindow: 200000,
+    maxOutput: 8192,
+    adaptiveThinking: false,
+    highResImages: false,
+    inputPrice: 0.000003,
+};
+
+/**
+ * Resolve the UI-facing capabilities of a Claude model name.
+ * @param {string} model Model identifier
+ * @returns {typeof CLAUDE_UI_DEFAULT_CAPABILITIES} Resolved capabilities
+ */
+function getClaudeUiCapabilities(model) {
+    const name = String(model ?? '');
+    const match = CLAUDE_UI_CAPABILITIES.find(entry => entry.pattern.test(name));
+    return { ...CLAUDE_UI_DEFAULT_CAPABILITIES, ...(match?.caps ?? {}) };
+}
+
+/**
  * Server-side `claude.batchFlex.enabled`, relayed by the batch endpoints. Assumed
  * on until the first response lands: guessing "off" would quietly send a Fable 5
  * generation as a full-price synchronous request, which is the one outcome this
@@ -3049,9 +3093,6 @@ export async function createGenerationParameters(settings, model, type, messages
     }
 
     if (settings.chat_completion_source === chat_completion_sources.CLAUDE) {
-        if (/^claude-opus-4-7/.test(model) && settings.reasoning_effort !== reasoning_effort_types.none) {
-            oai_settings.show_thoughts = false;
-        }
         generate_data.top_k = Number(settings.top_k_openai);
         generate_data.use_sysprompt = settings.use_sysprompt;
         generate_data.claude_enable_caching = settings.claude_enable_caching;
@@ -6089,18 +6130,23 @@ async function onModelChange() {
     }
 
     if (oai_settings.chat_completion_source == chat_completion_sources.CLAUDE) {
-        if (oai_settings.max_context_unlocked) {
-            $('#openai_max_context').attr('max', unlocked_max);
-        } else if (/^claude-(sonnet-4-5|sonnet-4-6|opus-4-6|opus-4-7)/.test(value)) {
-            $('#openai_max_context').attr('max', max_1mil);
-        } else if (/^claude-(3|opus|haiku|sonnet)/.test(value)) {
-            $('#openai_max_context').attr('max', max_200k);
-        } else {
-            $('#openai_max_context').attr('max', max_200k);
-        }
+        const claudeCaps = getClaudeUiCapabilities(value);
+        $('#openai_max_context').attr('max', oai_settings.max_context_unlocked ? unlocked_max : claudeCaps.contextWindow);
 
         oai_settings.openai_max_context = Math.min(oai_settings.openai_max_context, Number($('#openai_max_context').attr('max')));
         $('#openai_max_context').val(oai_settings.openai_max_context).trigger('input');
+
+        // Response length ceiling is per-model too; index.html hardcodes the highest.
+        $('#openai_max_tokens').attr('max', claudeCaps.maxOutput);
+        oai_settings.openai_max_tokens = Math.min(oai_settings.openai_max_tokens, claudeCaps.maxOutput);
+        $('#openai_max_tokens').val(oai_settings.openai_max_tokens);
+
+        // Adaptive thinking is the only mode 4.6+ accept: manual budget_tokens is a
+        // 400. Leave the setting alone (presets carry it) but stop offering a choice.
+        $('#claude_use_adaptive_thinking').prop('disabled', claudeCaps.adaptiveThinking);
+        $('#claude_use_adaptive_thinking').closest('label').attr('title', claudeCaps.adaptiveThinking
+            ? 'This model only supports adaptive thinking; manual thinking budgets are rejected by the API.'
+            : '');
 
         $('#openai_reverse_proxy').attr('placeholder', 'https://api.anthropic.com/v1');
 
@@ -7121,17 +7167,18 @@ function updateVertexAIServiceAccountStatus(isValid = false, message = '') {
  * @param {number} tokenPrice - The price in tokens for the attached image.
  */
 export function updateClaudeResolutionHint() {
-    const isOpus47 = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(oai_settings.claude_model);
+    const caps = getClaudeUiCapabilities(oai_settings.claude_model);
+    const highRes = caps.highResImages;
     const $opusOption = $('#claude_image_resolution option[value="opus"]');
-    $opusOption.prop('hidden', !isOpus47);
-    if (!isOpus47 && oai_settings.claude_image_resolution === 'opus') {
+    $opusOption.prop('hidden', !highRes);
+    if (!highRes && oai_settings.claude_image_resolution === 'opus') {
         oai_settings.claude_image_resolution = 'medium';
         $('#claude_image_resolution').val('medium');
     }
 
     // @ts-ignore
     const resolutionPresets = { min: 256, low: 512, medium: 1024, high: 1568};
-    if (isOpus47) {
+    if (highRes) {
         Object.assign(resolutionPresets, {opus: 2576});
     }
     const preset = oai_settings.claude_image_resolution || default_settings.claude_image_resolution;
@@ -7140,12 +7187,7 @@ export function updateClaudeResolutionHint() {
     const maxEdge = resolutionPresets[presetKey] ?? resolutionPresets.medium;
     const paddedEdge = Math.ceil(maxEdge / 28) * 28;
     const tokens = Math.round(paddedEdge * paddedEdge / 750);
-    const model = oai_settings.claude_model || '';
-    const pricePerToken = /^claude-opus-4-(5|6|7)/.test(model) ? 0.000005
-        : /^claude-opus-4-(1|2)/.test(model) ? 0.000015
-        : /^claude-sonnet/.test(model) ? 0.000003
-        : 0.000001;
-    const cost = tokens * pricePerToken;
+    const cost = tokens * caps.inputPrice;
     $('#claude_image_resolution_hint').text(`Max ~${tokens.toLocaleString()} tokens (${maxEdge.toLocaleString()} px long edge)`);
     $('#claude_image_resolution_cost').text(`Cost: $${cost.toFixed(4)}`);
 }

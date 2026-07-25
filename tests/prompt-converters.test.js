@@ -100,6 +100,39 @@ describe('convertTextCompletionPrompt', () => {
 });
 
 
+describe('getClaudeAdaptiveEffort', () => {
+    test('none and auto send no effort at all', () => {
+        expect(mod.getClaudeAdaptiveEffort('none', 'claude-opus-5')).toBeNull();
+        expect(mod.getClaudeAdaptiveEffort('auto', 'claude-opus-5')).toBeNull();
+    });
+
+    test('opus-5 supports the full ladder', () => {
+        expect(mod.getClaudeAdaptiveEffort('low', 'claude-opus-5')).toBe('low');
+        expect(mod.getClaudeAdaptiveEffort('xhigh', 'claude-opus-5')).toBe('xhigh');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-5')).toBe('max');
+    });
+
+    test('degrades to the model ceiling', () => {
+        // 4.6 never had xhigh; its top tier is named max.
+        expect(mod.getClaudeAdaptiveEffort('xhigh', 'claude-opus-4-6')).toBe('max');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-6')).toBe('max');
+        // Fable 5 / Sonnet 5 / Opus 4.8 stop at xhigh.
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-fable-5')).toBe('xhigh');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-sonnet-5')).toBe('xhigh');
+        expect(mod.getClaudeAdaptiveEffort('max', 'claude-opus-4-8')).toBe('xhigh');
+    });
+
+    test('min is treated as low', () => {
+        expect(mod.getClaudeAdaptiveEffort('min', 'claude-opus-5')).toBe('low');
+        expect(mod.getClaudeAdaptiveEffort('minimal', 'claude-opus-5')).toBe('low');
+    });
+
+    test('models without an effort parameter send nothing', () => {
+        expect(mod.getClaudeAdaptiveEffort('high', 'claude-opus-4-5')).toBeNull();
+        expect(mod.getClaudeAdaptiveEffort('high', 'some-proxied-model')).toBeNull();
+    });
+});
+
 describe('calculateClaudeBudgetTokens', () => {
     describe('adaptive model (Opus 4.6+)', () => {
         test('auto returns null', () => {
@@ -916,6 +949,28 @@ describe('convertClaudeMessages', () => {
         expect(last.role).toBe('assistant');
         // Prefill should be trimmed on the right
         expect(last.content[0].text).toBe('Sure, I will');
+    });
+
+    test('drops the prefill turn when the model does not support prefill', () => {
+        const messages = [
+            { role: 'user', content: 'Hello' },
+        ];
+        const result = mod.convertClaudeMessages(messages, 'Sure, I will ', false, false, names, false);
+        const last = result.messages[result.messages.length - 1];
+        expect(last.role).toBe('user');
+        // Never leave two adjacent same-role turns behind.
+        const roles = result.messages.map(m => m.role);
+        expect(roles.some((role, i) => i > 0 && role === roles[i - 1])).toBe(false);
+    });
+
+    test('redirects a dropped prefill into the system prompt', () => {
+        const messages = [
+            { role: 'system', content: 'System instruction' },
+            { role: 'user', content: 'Hello' },
+        ];
+        const result = mod.convertClaudeMessages(messages, 'Sure, I will ', true, false, names, false);
+        expect(result.systemPrompt).toContainEqual({ type: 'text', text: 'Sure, I will' });
+        expect(result.messages[result.messages.length - 1].role).toBe('user');
     });
 
     test('converts tool_calls to tool_use format', () => {

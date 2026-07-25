@@ -535,6 +535,264 @@ export const NANOGPT_REASONING_EFFORT_MAP = {
     max: 'high',
 };
 
+/**
+ * Ordered effort tiers as the UI presents them. Index position is what matters:
+ * a model's `effortLevels` list is indexed by the tier the user picked, clamped
+ * to the list length. That way Opus 4.6 (whose top tier is named "max", not
+ * "xhigh") still gets its top tier when the user asks for Extra High.
+ * @type {string[]}
+ */
+export const CLAUDE_EFFORT_TIERS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * Conservative baseline for any Claude model we don't recognise, including the
+ * arbitrary names a reverse proxy can pass through. Assumes the OLDER, more
+ * permissive request shape on purpose: sending `budget_tokens` to a model that
+ * wanted adaptive thinking is a loud, recoverable 400, whereas assuming the
+ * newer shape would silently strip the user's temperature on every custom model.
+ */
+const CLAUDE_DEFAULT_CAPABILITIES = {
+    /** @type {'none'|'manual'|'adaptive'} Which `thinking` field shapes the API accepts. */
+    thinkingMode: 'manual',
+    /** Whether omitting `thinking` entirely still produces thinking (5-series). */
+    thinkingDefaultOn: false,
+    /** @type {'never'|'always'|'effort-capped'} */
+    canDisableThinking: 'always',
+    /** Highest effort that may accompany `thinking: {type:'disabled'}`, when effort-capped. */
+    disableEffortCap: 'high',
+    supportsPrefill: true,
+    /** @type {'full'|'limited'|'none'} `limited` means temperature XOR top_p, never both. */
+    samplingMode: 'limited',
+    /** @type {string[]} API-accepted effort names, ascending. Empty = model has no effort param. */
+    effortLevels: [],
+    /** Whether `thinking.display` is accepted (and therefore required to see any thinking text). */
+    thinkingDisplay: false,
+    supportsTaskBudget: false,
+    supportsWebSearch: false,
+    contextWindow: 200000,
+    maxOutput: 8192,
+    /** 2576px long edge instead of 1568px. */
+    highResImages: false,
+};
+
+/**
+ * Per-model Claude API capabilities, matched most-specific-first.
+ *
+ * Encoded from Anthropic's model migration guide. Every Claude code path should
+ * read this table rather than growing another inline regex — adding the next
+ * model should be one entry here, not a dozen scattered edits.
+ *
+ * @type {{ pattern: RegExp, caps: Partial<typeof CLAUDE_DEFAULT_CAPABILITIES> }[]}
+ */
+export const CLAUDE_MODEL_CAPABILITIES = [
+    {
+        // Fable 5 / Mythos 5: adaptive thinking is unconditional. Both
+        // `thinking: {type:'disabled'}` and manual budget_tokens return 400.
+        pattern: /^claude-(fable|mythos)-5/,
+        caps: {
+            thinkingMode: 'adaptive',
+            thinkingDefaultOn: true,
+            canDisableThinking: 'never',
+            supportsPrefill: false,
+            samplingMode: 'none',
+            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            thinkingDisplay: true,
+            supportsTaskBudget: true,
+            supportsWebSearch: true,
+            contextWindow: 1000000,
+            maxOutput: 128000,
+            highResImages: true,
+        },
+    },
+    {
+        // Opus 5: thinking may be disabled, but only at effort `high` or below.
+        // Pairing `disabled` with xhigh/max is a 400, checked per request.
+        pattern: /^claude-opus-5/,
+        caps: {
+            thinkingMode: 'adaptive',
+            thinkingDefaultOn: true,
+            canDisableThinking: 'effort-capped',
+            disableEffortCap: 'high',
+            supportsPrefill: false,
+            samplingMode: 'none',
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            thinkingDisplay: true,
+            supportsTaskBudget: true,
+            supportsWebSearch: true,
+            contextWindow: 1000000,
+            maxOutput: 128000,
+            highResImages: true,
+        },
+    },
+    {
+        // Sonnet 5: same family, but `disabled` is accepted at any effort level.
+        pattern: /^claude-sonnet-5/,
+        caps: {
+            thinkingMode: 'adaptive',
+            thinkingDefaultOn: true,
+            canDisableThinking: 'always',
+            supportsPrefill: false,
+            samplingMode: 'none',
+            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            thinkingDisplay: true,
+            supportsTaskBudget: true,
+            supportsWebSearch: true,
+            contextWindow: 1000000,
+            maxOutput: 128000,
+            highResImages: true,
+        },
+    },
+    {
+        // Opus 4.7 / 4.8: adaptive thinking, but OFF unless asked for. First
+        // models to reject any non-default temperature/top_p/top_k outright.
+        pattern: /^claude-opus-4-(7|8)/,
+        caps: {
+            thinkingMode: 'adaptive',
+            thinkingDefaultOn: false,
+            canDisableThinking: 'always',
+            supportsPrefill: false,
+            samplingMode: 'none',
+            effortLevels: ['low', 'medium', 'high', 'xhigh'],
+            thinkingDisplay: true,
+            supportsTaskBudget: true,
+            supportsWebSearch: true,
+            contextWindow: 1000000,
+            maxOutput: 128000,
+            highResImages: true,
+        },
+    },
+    {
+        // 4.6: first adaptive generation. Top effort tier is named `max` here;
+        // `xhigh` did not exist yet. Still honours one of temperature/top_p.
+        pattern: /^claude-(opus|sonnet)-4-6/,
+        caps: {
+            thinkingMode: 'adaptive',
+            thinkingDefaultOn: false,
+            canDisableThinking: 'always',
+            supportsPrefill: false,
+            samplingMode: 'limited',
+            effortLevels: ['low', 'medium', 'high', 'max'],
+            thinkingDisplay: true,
+            supportsWebSearch: true,
+            contextWindow: 1000000,
+            maxOutput: 128000,
+        },
+    },
+    {
+        pattern: /^claude-sonnet-4-5/,
+        caps: { supportsWebSearch: true, contextWindow: 1000000, maxOutput: 64000 },
+    },
+    {
+        pattern: /^claude-opus-4-5/,
+        caps: { supportsWebSearch: true, maxOutput: 64000 },
+    },
+    {
+        pattern: /^claude-haiku-4-5/,
+        caps: { supportsWebSearch: true, maxOutput: 64000 },
+    },
+    {
+        pattern: /^claude-opus-4-1/,
+        caps: { supportsWebSearch: true, maxOutput: 32000 },
+    },
+    {
+        pattern: /^claude-opus-4/,
+        caps: { supportsWebSearch: true, maxOutput: 32000 },
+    },
+    {
+        pattern: /^claude-sonnet-4/,
+        caps: { supportsWebSearch: true, maxOutput: 64000 },
+    },
+    {
+        pattern: /^claude-3-7/,
+        caps: { supportsWebSearch: true, maxOutput: 64000 },
+    },
+    {
+        // Claude 3.x predates extended thinking entirely.
+        pattern: /^claude-3-5/,
+        caps: { thinkingMode: 'none', samplingMode: 'full', supportsWebSearch: true, maxOutput: 8192 },
+    },
+    {
+        pattern: /^claude-3/,
+        caps: { thinkingMode: 'none', samplingMode: 'full', maxOutput: 4096 },
+    },
+];
+
+/**
+ * Resolve the API capabilities of a Claude model name.
+ * Unknown names (custom deployments, reverse proxy passthrough) fall back to the
+ * conservative baseline rather than assuming the newest request shape.
+ * @param {string} model Model identifier
+ * @returns {typeof CLAUDE_DEFAULT_CAPABILITIES} Resolved capabilities
+ */
+export function getClaudeCapabilities(model) {
+    const name = String(model ?? '');
+    const match = CLAUDE_MODEL_CAPABILITIES.find(entry => entry.pattern.test(name));
+    return { ...CLAUDE_DEFAULT_CAPABILITIES, ...(match?.caps ?? {}) };
+}
+
+/**
+ * Map a UI effort tier onto the effort name a given model actually accepts.
+ * Resolves positionally and clamps to the model's top tier, so a request for
+ * Extra High on a model that stops at `max` still gets that model's ceiling.
+ * @param {string} tier UI tier: low/medium/high/xhigh/max (or `min`, treated as low)
+ * @param {typeof CLAUDE_DEFAULT_CAPABILITIES} caps Resolved model capabilities
+ * @returns {string|null} Effort value for `output_config.effort`, or null for the API default
+ */
+export function resolveClaudeEffort(tier, caps) {
+    const levels = caps?.effortLevels ?? [];
+    if (!levels.length) {
+        return null;
+    }
+
+    // `min` is a SillyTavern-only tier that predates the effort parameter.
+    const index = CLAUDE_EFFORT_TIERS.indexOf(tier === 'min' || tier === 'minimal' ? 'low' : tier);
+    if (index === -1) {
+        return null;
+    }
+
+    return levels[Math.min(index, levels.length - 1)];
+}
+
+/**
+ * Claude token prices in USD per million tokens, most-specific-first.
+ * Base (non-batch) rates; the Message Batches API bills at 50% of these.
+ * @type {{ pattern: RegExp, input: number, output: number, until?: string, then?: { input: number, output: number } }[]}
+ */
+export const CLAUDE_MODEL_PRICING = [
+    { pattern: /^claude-(fable|mythos)-5/, input: 10, output: 50 },
+    { pattern: /^claude-opus-5/, input: 5, output: 25 },
+    // Sonnet 5 launched on introductory pricing that reverts on 2026-09-01.
+    { pattern: /^claude-sonnet-5/, input: 2, output: 10, until: '2026-09-01', then: { input: 3, output: 15 } },
+    { pattern: /^claude-opus-4-(5|6|7|8)/, input: 5, output: 25 },
+    { pattern: /^claude-opus-4/, input: 15, output: 75 },
+    { pattern: /^claude-sonnet-4/, input: 3, output: 15 },
+    { pattern: /^claude-haiku-4-5/, input: 1, output: 5 },
+    { pattern: /^claude-3-7/, input: 3, output: 15 },
+    { pattern: /^claude-3-5-haiku/, input: 0.8, output: 4 },
+    { pattern: /^claude-3-5/, input: 3, output: 15 },
+    { pattern: /^claude-3-opus/, input: 15, output: 75 },
+    { pattern: /^claude-3-haiku/, input: 0.25, output: 1.25 },
+];
+
+/**
+ * Look up per-million token prices for a Claude model.
+ * @param {string} model Model identifier
+ * @param {Date} [now] Clock, for the introductory-pricing cutover
+ * @returns {{ input: number, output: number }|null} Prices in USD per million tokens, or null if unknown
+ */
+export function getClaudePricing(model, now = new Date()) {
+    const entry = CLAUDE_MODEL_PRICING.find(e => e.pattern.test(String(model ?? '')));
+    if (!entry) {
+        return null;
+    }
+
+    if (entry.until && entry.then && now >= new Date(entry.until)) {
+        return { input: entry.then.input, output: entry.then.output };
+    }
+
+    return { input: entry.input, output: entry.output };
+}
+
 export const LOG_LEVELS = {
     DEBUG: 0,
     INFO: 1,

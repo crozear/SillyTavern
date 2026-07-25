@@ -13,7 +13,10 @@ import {
     AIMLAPI_HEADERS,
     AZURE_OPENAI_KEYS,
     CHAT_COMPLETION_SOURCES,
+    CLAUDE_MODEL_CAPABILITIES,
     GEMINI_SAFETY,
+    getClaudeCapabilities,
+    getClaudePricing,
     NANOGPT_REASONING_EFFORT_MAP,
     OPENAI_FIXED_REASONING_EFFORT,
     OPENAI_PRO_REASONING_MODELS,
@@ -1080,8 +1083,9 @@ function createWordReplacementStream(enabled) {
 function formatStreamingResponse(raw, responseHeaders = null) {
     let thinking = '';
     let text = '';
-    let metaBase = null;
-    let finalOutputTokens = null;
+    let streamedModel = null;
+    /** @type {any} */
+    let streamedUsage = null;
 
     for (const line of raw.split('\n')) {
         if (!line.startsWith('data:')) continue;
@@ -1091,13 +1095,13 @@ function formatStreamingResponse(raw, responseHeaders = null) {
         try { parsed = JSON.parse(jsonStr); } catch { continue; }
 
         if (parsed?.type === 'message_start' && parsed.message) {
-            const msg = parsed.message;
-            const u = msg.usage ?? {};
-            metaBase = { model: msg.model, inputTokens: u.input_tokens ?? '?', cacheRead: u.cache_read_input_tokens ?? 0, cacheCreated: u.cache_creation_input_tokens ?? 0 };
+            streamedModel = parsed.message.model;
+            streamedUsage = { ...(parsed.message.usage ?? {}) };
         }
 
-        if (parsed?.type === 'message_delta' && parsed.usage?.output_tokens != null) {
-            finalOutputTokens = parsed.usage.output_tokens;
+        // Only the final message_delta carries the real output token count.
+        if (parsed?.type === 'message_delta' && parsed.usage?.output_tokens != null && streamedUsage) {
+            streamedUsage.output_tokens = parsed.usage.output_tokens;
         }
 
         const delta = parsed?.delta ?? parsed?.choices?.[0]?.delta;
@@ -1111,20 +1115,78 @@ function formatStreamingResponse(raw, responseHeaders = null) {
     const parts = [];
     if (thinking) parts.push(`[Thinking]\n${thinking}`);
     if (text) parts.push(`[Response]\n${text}`);
-    if (metaBase) {
-        const out = finalOutputTokens ?? '?';
-        let meta = `model: ${metaBase.model} | in: ${metaBase.inputTokens} | out: ${out} | cache_read: ${metaBase.cacheRead} | cache_created: ${metaBase.cacheCreated}`;
+    if (streamedUsage) {
         // Anthropic responses carry the org that served the request; the prompt
         // cache is scoped per org, so a flip here explains any cache_read: 0
-        if (responseHeaders && typeof responseHeaders.get === 'function') {
-            const orgId = responseHeaders.get('anthropic-organization-id');
-            const requestId = responseHeaders.get('request-id');
-            if (orgId) meta += ` | org: ${orgId}`;
-            if (requestId) meta += ` | req: ${requestId}`;
-        }
-        parts.push(meta);
+        const canReadHeaders = responseHeaders && typeof responseHeaders.get === 'function';
+        parts.push(formatClaudeUsageMeta(streamedModel, streamedUsage, {
+            org: canReadHeaders ? responseHeaders.get('anthropic-organization-id') : '',
+            req: canReadHeaders ? responseHeaders.get('request-id') : '',
+        }));
     }
     return parts.length ? parts.join('\n\n') : '(no text content)';
+}
+
+/**
+ * Stop reasons that end a generation successfully (HTTP 200) but produce no
+ * usable output. Without explicit handling they surface as an empty message.
+ */
+const CLAUDE_ABNORMAL_STOP_REASONS = new Set(['refusal', 'model_context_window_exceeded']);
+
+/**
+ * Describe an abnormal Claude stop reason in user-facing terms.
+ * @param {string} stopReason Value of `stop_reason`
+ * @param {string} [category] Value of `stop_details.category` ("cyber", "bio", …)
+ * @returns {string|null} Message to surface, or null when the generation ended normally
+ */
+function describeClaudeStop(stopReason, category) {
+    if (!stopReason || !CLAUDE_ABNORMAL_STOP_REASONS.has(stopReason)) {
+        return null;
+    }
+
+    if (stopReason === 'refusal') {
+        // Safety classifiers (Fable 5, Sonnet 5, Opus 5) decline as a 200 response.
+        return `Claude declined this request (stop_reason: refusal${category ? `, category: ${category}` : ''}). Any partial output was discarded.`;
+    }
+
+    return 'Claude stopped because the model context window was exceeded, not max_tokens. Reduce the context size and try again.';
+}
+
+/**
+ * Watch a forwarded SSE stream for an abnormal Claude stop reason.
+ * A refusal arrives as an ordinary stream that simply stops producing text, so
+ * this writes an error frame the frontend already knows how to toast.
+ * @param {import('express').Response} to Destination response
+ * @returns {(text: string) => void} Chunk inspector, safe to call on every chunk
+ */
+function makeClaudeStopWatcher(to) {
+    let notified = false;
+    return (text) => {
+        if (notified || !text.includes('stop_reason')) {
+            return;
+        }
+
+        for (const line of text.split('\n')) {
+            if (!line.startsWith('data:')) {
+                continue;
+            }
+
+            // Chunk boundaries can split a frame; a partial parse just yields null.
+            const parsed = tryParse(line.slice(5).trim());
+            const payload = parsed?.delta ?? parsed?.message;
+            const notice = describeClaudeStop(payload?.stop_reason, payload?.stop_details?.category);
+            if (!notice) {
+                continue;
+            }
+
+            notified = true;
+            console.warn(color.red(notice));
+            if (to && !to.writableEnded) {
+                to.write(`data: ${JSON.stringify({ error: { message: notice } })}\n\n`);
+            }
+            return;
+        }
+    };
 }
 
 function forwardFetchResponseWithWordReplacements(from, to, enabled) {
@@ -1156,9 +1218,14 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             }
         };
 
+        const watchForStop = makeClaudeStopWatcher(to);
+
         if (!isEnabled) {
             const chunks = [];
-            from.body.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+            from.body.on('data', (chunk) => {
+                chunks.push(Buffer.from(chunk));
+                watchForStop(chunk.toString('utf8'));
+            });
             from.body.pipe(to);
 
             to.socket.on('close', function () {
@@ -1177,7 +1244,10 @@ function forwardFetchResponseWithWordReplacements(from, to, enabled) {
             });
         } else {
             const chunks = [];
-            from.body.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+            from.body.on('data', (chunk) => {
+                chunks.push(Buffer.from(chunk));
+                watchForStop(chunk.toString('utf8'));
+            });
             const transformStream = createWordReplacementStream(isEnabled);
             from.body.pipe(transformStream).pipe(to);
 
@@ -1491,22 +1561,38 @@ async function consumeAndForwardClaudeStream(fetchResponse, expressResponse, wor
  * submit endpoint so both paths produce byte-identical request shapes.
  * @param {import('express').Request} request Express request
  * @param {string} apiKey Resolved API key (or proxy password) for the x-api-key header
- * @returns {{ requestBody: any, fetchHeaders: Record<string, string>, useTools: boolean, useWebSearch: boolean }}
+ * @returns {{ requestBody: any, fetchHeaders: Record<string, string>, useTools: boolean, useWebSearch: boolean, caps: any, taskBudgetEnabled: boolean }}
  */
 function buildClaudeRequestBody(request, apiKey) {
     const { enableSystemPromptCache, cachingAtDepth, ttl: cacheTTL } = resolveClaudeCachingConfig(request);
     const additionalHeaders = {};
-    const betaHeaders = ['output-300k-2026-03-24'];
+    const betaHeaders = [];
+    const model = String(request.body.model ?? '');
+    // Every per-model decision below reads this table instead of an inline regex.
+    const caps = getClaudeCapabilities(model);
+    const isKnownClaudeModel = CLAUDE_MODEL_CAPABILITIES.some(entry => entry.pattern.test(model));
     const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
     const useSystemPrompt = Boolean(request.body.use_sysprompt);
-    const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request));
-    const useThinking = /^claude-(3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-    const isAdaptiveThinking = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && request.body.claude_use_adaptive_thinking !== false;
-    const useWebSearch = /^claude-(3-5|3-7|opus-4|sonnet-4|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model) && Boolean(request.body.enable_web_search);
-    const isLimitedSampling = /^claude-(opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5|opus-4-6|sonnet-4-6)/.test(request.body.model);
-    const noPrefillModel = /^claude-(opus-4-6|sonnet-4-6|opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-    const noSamplingModel = /^claude-(opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5)/.test(request.body.model);
-    let fixThinkingPrefill = false;
+    const reasoningEffort = request.body.reasoning_effort;
+    const wantsThinkingOff = !reasoningEffort || reasoningEffort === 'none';
+    // A manual thinking block also conflicts with a prefill, so decide this before
+    // the converter runs: it has to drop the assistant turn BEFORE merging same-role
+    // runs, or flipping it back to `user` afterwards doubles the final user message.
+    const manualThinkingActive = caps.thinkingMode === 'manual' && !wantsThinkingOff && reasoningEffort !== 'auto';
+    const allowPrefill = caps.supportsPrefill && !manualThinkingActive;
+    const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request), allowPrefill);
+    const useWebSearch = caps.supportsWebSearch && Boolean(request.body.enable_web_search);
+    const taskBudgetEnabled = caps.supportsTaskBudget && Boolean(request.body.claude_task_budget_enabled);
+    // openai.js already sends this on every request; it mirrors the "Show Thoughts" setting.
+    const showThoughts = Boolean(request.body.include_reasoning);
+
+    // The 300k output beta only means something on models that can exceed the
+    // default cap. Unknown names (reverse proxy passthrough) keep the old
+    // unconditional behaviour rather than silently losing headroom.
+    if (!isKnownClaudeModel || caps.maxOutput >= 128000) {
+        betaHeaders.push('output-300k-2026-03-24');
+    }
+
     // Add custom stop sequences
     const stopSequences = [];
     if (Array.isArray(request.body.stop)) {
@@ -1547,11 +1633,6 @@ function buildClaudeRequestBody(request, apiKey) {
             requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
         }
     }
-    if (/^claude-opus-4-(7|8)/.test(request.body.model)) {
-            delete requestBody.top_k;
-            delete requestBody.temperature;
-            delete requestBody.top_p;
-    }
     // Structured output is a forced tool
     if (request.body.json_schema) {
         const jsonTool = {
@@ -1580,86 +1661,110 @@ function buildClaudeRequestBody(request, apiKey) {
         betaHeaders.push('extended-cache-ttl-2025-04-11');
     }
 
-    if (isLimitedSampling) {
-        if (requestBody.temperature < 1) {
-            delete requestBody.top_p;
+    if (caps.thinkingMode !== 'none') {
+        // Fable 5 / Mythos 5 think unconditionally: both `disabled` and manual
+        // budget_tokens are a 400, so "None" simply has nothing to send.
+        const forcedOn = wantsThinkingOff && caps.canDisableThinking === 'never';
+        if (forcedOn) {
+            console.info(color.blue(`Thinking cannot be disabled on ${model}; the "None" reasoning effort has no effect.`));
+        }
+
+        if (wantsThinkingOff && !forcedOn) {
+            requestBody.thinking = { type: 'disabled' };
         } else {
+            const minThinkTokens = 1024;
+            if (requestBody.max_tokens <= minThinkTokens) {
+                const newValue = requestBody.max_tokens + minThinkTokens;
+                console.warn(color.yellow(`Claude thinking requires a minimum of ${minThinkTokens} response tokens.`));
+                console.info(color.blue(`Increasing response length to ${newValue}.`));
+                requestBody.max_tokens = newValue;
+            }
+
+            if (caps.thinkingMode === 'adaptive') {
+                requestBody.thinking = { type: 'adaptive' };
+
+                const effort = getClaudeAdaptiveEffort(reasoningEffort, caps);
+                if (effort) {
+                    requestBody.output_config ??= {};
+                    requestBody.output_config.effort = effort;
+                }
+            } else {
+                // Pre-4.6: manual extended thinking with an explicit budget.
+                const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream, false);
+                if (Number.isInteger(budgetTokens)) {
+                    requestBody.thinking = {
+                        type: 'enabled',
+                        budget_tokens: budgetTokens,
+                    };
+                }
+            }
+        }
+    }
+
+    const thinkingActive = Boolean(requestBody.thinking) && requestBody.thinking.type !== 'disabled';
+
+    // Opus 5 rejects `thinking: {type:'disabled'}` above `high` effort, per request.
+    if (requestBody.thinking?.type === 'disabled' && caps.canDisableThinking === 'effort-capped' && requestBody.output_config?.effort) {
+        const capIndex = caps.effortLevels.indexOf(caps.disableEffortCap);
+        const currentIndex = caps.effortLevels.indexOf(requestBody.output_config.effort);
+        if (capIndex !== -1 && currentIndex > capIndex) {
+            console.info(color.blue(`${model} caps effort at ${caps.disableEffortCap} while thinking is disabled; lowering from ${requestBody.output_config.effort}.`));
+            requestBody.output_config.effort = caps.disableEffortCap;
+        }
+    }
+
+    // Thinking text is omitted by default from Opus 4.7 onward, so the "Show
+    // Thoughts" setting has to be asked for explicitly or nothing ever renders.
+    if (thinkingActive && caps.thinkingDisplay) {
+        requestBody.thinking.display = showThoughts ? 'summarized' : 'omitted';
+    }
+
+    // A task budget is advisory and orthogonal to thinking, so it is not gated on it.
+    if (taskBudgetEnabled) {
+        const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
+        requestBody.output_config ??= {};
+        requestBody.output_config.task_budget = { type: 'tokens', total };
+        betaHeaders.push('task-budgets-2026-03-13');
+    }
+
+    // Sampling, resolved in one place. Comparisons read the ORIGINAL request
+    // values so the rules stay order-independent.
+    if (caps.samplingMode === 'none') {
+        delete requestBody.temperature;
+        delete requestBody.top_p;
+        delete requestBody.top_k;
+    } else {
+        if (caps.samplingMode === 'limited') {
+            if (Number(request.body.temperature) < 1) {
+                delete requestBody.top_p;
+            } else {
+                delete requestBody.temperature;
+            }
+        }
+
+        if (thinkingActive) {
+            // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
+            delete requestBody.temperature;
+            delete requestBody.top_k;
+
+            if (Number(request.body.top_p) < 0.95) {
+                delete requestBody.top_p;
+            }
+        }
+
+        // Sending an API default is pointless noise.
+        if (request.body.top_p === 1) {
+            delete requestBody.top_p;
+        }
+
+        if (request.body.temperature === 1) {
             delete requestBody.temperature;
         }
     }
 
-    if (noSamplingModel) {
-        delete requestBody.temperature;
-        delete requestBody.top_p;
-        delete requestBody.top_k;
-    }
-
-    const reasoningEffort = request.body.reasoning_effort;
-    const isThinkingDisabled = !reasoningEffort || reasoningEffort === 'none';
-
-    if (useThinking && !isThinkingDisabled) {
-        // No prefill when thinking
-        fixThinkingPrefill = true;
-        const minThinkTokens = 1024;
-        if (requestBody.max_tokens <= minThinkTokens) {
-            const newValue = requestBody.max_tokens + minThinkTokens;
-            console.warn(color.yellow(`Claude thinking requires a minimum of ${minThinkTokens} response tokens.`));
-            console.info(color.blue(`Increasing response length to ${newValue}.`));
-            requestBody.max_tokens = newValue;
-        }
-
-        if (isAdaptiveThinking) {
-            // Opus/Sonnet 4.6+: use adaptive thinking
-            requestBody.thinking = { type: 'adaptive' };
-
-            const effort = getClaudeAdaptiveEffort(reasoningEffort, request.body.model);
-            if (effort) {
-                requestBody.output_config ??= {};
-                requestBody.output_config.effort = effort;
-            }
-        }
-
-        if (/^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled) {
-            const total = Math.max(20000, Number(request.body.claude_task_budget_total) || 64000);
-            requestBody.output_config ??= {};
-            requestBody.output_config.task_budget = { type: 'tokens', total };
-            betaHeaders.push('task-budgets-2026-03-13');
-        }
-
-        if (!isAdaptiveThinking) {
-            // Older models: use enabled thinking with budget_tokens
-            const budgetTokens = calculateClaudeBudgetTokens(requestBody.max_tokens, reasoningEffort, requestBody.stream);
-            if (Number.isInteger(budgetTokens)) {
-                requestBody.thinking = {
-                    type: 'enabled',
-                    budget_tokens: budgetTokens,
-                };
-            }
-        }
-
-        // NO I CAN'T SILENTLY IGNORE THE TEMPERATURE.
-        delete requestBody.temperature;
-        delete requestBody.top_k;
-
-        if (requestBody.top_p < 0.95) {
-            delete requestBody.top_p;
-        }
-    }
-
-    if ((fixThinkingPrefill || noPrefillModel) && convertedPrompt.messages.length && convertedPrompt.messages[convertedPrompt.messages.length - 1].role === 'assistant') {
-        convertedPrompt.messages[convertedPrompt.messages.length - 1].role = 'user';
-    }
-
-
     if (betaHeaders.length) {
         additionalHeaders['anthropic-beta'] = betaHeaders.join(',');
     }
-
-    if (request.body.top_p === 1)
-        delete requestBody.top_p;
-
-    if (request.body.temperature === 1)
-        delete requestBody.temperature;
 
     console.debug('Claude request:', requestBody);
 
@@ -1670,7 +1775,7 @@ function buildClaudeRequestBody(request, apiKey) {
         ...additionalHeaders,
     };
 
-    return { requestBody, fetchHeaders, useTools, useWebSearch };
+    return { requestBody, fetchHeaders, useTools, useWebSearch, caps, taskBudgetEnabled };
 }
 
 async function sendClaudeRequest(request, response) {
@@ -1691,9 +1796,8 @@ async function sendClaudeRequest(request, response) {
             controller.abort();
         });
 
-        const { requestBody, fetchHeaders, useTools, useWebSearch } = buildClaudeRequestBody(request, apiKey);
+        const { requestBody, fetchHeaders, useTools, useWebSearch, taskBudgetEnabled } = buildClaudeRequestBody(request, apiKey);
 
-        const taskBudgetEnabled = /^claude-opus-4-7|opus-4-8|sonnet-5|fable-5|opus-5/.test(request.body.model) && request.body.claude_task_budget_enabled;
         const useAgenticLoop = taskBudgetEnabled && (useTools || useWebSearch);
         const maxIterations = Math.min(Math.max(1, Number(request.body.claude_task_budget_max_iterations) || 25), 50);
 
@@ -1753,9 +1857,18 @@ async function sendClaudeRequest(request, response) {
             console.debug('Claude response:', generateResponseJson);
 
             const usage = generateResponseJson?.usage ?? {};
-            const orgId = generateResponse.headers.get('anthropic-organization-id');
-            const requestId = generateResponse.headers.get('request-id');
-            console.info(`model: ${generateResponseJson?.model} | in: ${usage.input_tokens ?? '?'} | out: ${usage.output_tokens ?? '?'} | cache_read: ${usage.cache_read_input_tokens ?? 0} | cache_created: ${usage.cache_creation_input_tokens ?? 0}${orgId ? ` | org: ${orgId}` : ''}${requestId ? ` | req: ${requestId}` : ''}`);
+            console.info(formatClaudeUsageMeta(generateResponseJson?.model, usage, {
+                org: generateResponse.headers.get('anthropic-organization-id'),
+                req: generateResponse.headers.get('request-id'),
+            }));
+
+            // A refusal or a blown context window is a successful 200 with no usable
+            // text; report it instead of handing back an empty message.
+            const stopNotice = describeClaudeStop(generateResponseJson?.stop_reason, generateResponseJson?.stop_details?.category);
+            if (stopNotice) {
+                console.warn(color.red(`${stopNotice}\n${divider}`));
+                return response.send({ error: { message: stopNotice } });
+            }
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
@@ -3582,11 +3695,64 @@ function formatClaudeBatchElapsed(since) {
     return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-// Same one-line usage summary the synchronous Claude path prints, so batched and
-// blocking generations are comparable at a glance in the console.
-function formatClaudeUsageMeta(model, usage, extras = {}) {
+// "0.018$", "0.01$" — trailing zeros trimmed so the line stays scannable.
+function formatClaudeCost(amount) {
+    return `${Number(amount.toFixed(6))}$`;
+}
+
+/**
+ * Price a Claude generation from its usage block.
+ * The Message Batches API bills at 50% of the listed rates.
+ * @param {string} model Model that served the request
+ * @param {object} usage Anthropic `usage` object
+ * @param {boolean} batch Whether this was a batch generation
+ * @returns {{ input: number, output: number, total: number }|null} USD amounts, or null for an unpriced model
+ */
+function computeClaudeCost(model, usage, batch) {
+    const pricing = getClaudePricing(model);
+    if (!pricing) {
+        return null;
+    }
+
+    const discount = batch ? 0.5 : 1;
+    const inputRate = (pricing.input / 1e6) * discount;
+    const outputRate = (pricing.output / 1e6) * discount;
+
     const u = usage ?? {};
-    let meta = `model: ${model} | in: ${u.input_tokens ?? '?'} | out: ${u.output_tokens ?? '?'} | cache_read: ${u.cache_read_input_tokens ?? 0} | cache_created: ${u.cache_creation_input_tokens ?? 0}`;
+    const input = (Number(u.input_tokens) || 0) * inputRate;
+    const output = (Number(u.output_tokens) || 0) * outputRate;
+
+    // Anthropic reports input_tokens EXCLUSIVE of the cache counters, so these are
+    // additional spend: reads bill at 0.1x the input rate, writes at 1.25x (2x for
+    // the 1h extended TTL this fork can turn on).
+    const cacheRead = (Number(u.cache_read_input_tokens) || 0) * inputRate * 0.1;
+    const created = u.cache_creation ?? {};
+    const wrote5m = Number(created.ephemeral_5m_input_tokens);
+    const wrote1h = Number(created.ephemeral_1h_input_tokens);
+    const cacheWrite = Number.isFinite(wrote5m) || Number.isFinite(wrote1h)
+        ? ((wrote5m || 0) * 1.25 + (wrote1h || 0) * 2) * inputRate
+        : (Number(u.cache_creation_input_tokens) || 0) * inputRate * 1.25;
+
+    return { input, output, total: input + output + cacheRead + cacheWrite };
+}
+
+/**
+ * Same one-line usage summary the synchronous Claude path prints, so batched and
+ * blocking generations are comparable at a glance in the console.
+ * @param {string} model Model that served the request
+ * @param {object} usage Anthropic `usage` object
+ * @param {Record<string, any>} [extras] Trailing `key: value` fields, skipped when falsy
+ * @param {{ batch?: boolean }} [options] `batch` halves the per-token rates
+ * @returns {string} Formatted line
+ */
+function formatClaudeUsageMeta(model, usage, extras = {}, { batch = false } = {}) {
+    const u = usage ?? {};
+    // Unknown model: print the token counts and skip the cost rather than "NaN$".
+    const cost = computeClaudeCost(model, u, batch);
+    const inCost = cost ? ` (${formatClaudeCost(cost.input)})` : '';
+    const outCost = cost ? ` (${formatClaudeCost(cost.output)})` : '';
+    const totalCost = cost ? ` | total cost: ${formatClaudeCost(cost.total)}` : '';
+    let meta = `model: ${model} | in: ${u.input_tokens ?? '?'}${inCost} | out: ${u.output_tokens ?? '?'}${outCost}${totalCost} | cache_read: ${u.cache_read_input_tokens ?? 0} | cache_created: ${u.cache_creation_input_tokens ?? 0}`;
     for (const [key, value] of Object.entries(extras)) {
         if (value) meta += ` | ${key}: ${value}`;
     }
@@ -3750,7 +3916,18 @@ router.post('/claude-batch/result', async function (request, response) {
             msg: message?.id,
             batch: request.body.batchId,
             waited: job ? formatClaudeBatchElapsed(job.createdAt) : '',
-        }));
+        }, { batch: true }));
+
+        // Batches can come back refused (Fable 5 runs safety classifiers) or truncated
+        // by the context window. Both are "succeeded" results with nothing to deliver.
+        const stopNotice = describeClaudeStop(message?.stop_reason, message?.stop_details?.category);
+        if (stopNotice) {
+            console.warn(color.red(`Claude batch ${request.body.batchId}: ${stopNotice}`));
+            if (request.body.jobId) {
+                updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: 'refused' });
+            }
+            return response.send({ resultType: 'refused', error: { message: stopNotice } });
+        }
 
         const processed = enforceWordReplacementsOnResponse(reply, getWordReplacementEnabled(request));
 

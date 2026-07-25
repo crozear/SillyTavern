@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getConfigValue, tryParse } from './util.js';
+import { getClaudeCapabilities, resolveClaudeEffort } from './constants.js';
 
 const PROMPT_PLACEHOLDER = getConfigValue('promptPlaceholder', 'Let\'s get started.');
 
@@ -16,15 +17,20 @@ function normalizeDeveloperRole(messages) {
     });
 }
 
+/**
+ * Reasoning effort values as they arrive from the frontend.
+ * These are switch labels only — never emitted to any API. Providers that send an
+ * effort string map through their own tables (OPENAI_REASONING_EFFORT_MAP etc.).
+ */
 const REASONING_EFFORT = {
     none: 'none',
     auto: 'auto',
-    min: 'minimal',
+    min: 'min',
     low: 'low',
     medium: 'medium',
     high: 'high',
     xhigh: 'xhigh',
-    max: 'xhigh'
+    max: 'max',
 };
 
 export const PROMPT_PROCESSING_TYPE = {
@@ -207,9 +213,10 @@ export function convertClaudePrompt(messages, addAssistantPostfix, addAssistantP
  * @param {boolean}  useSysPrompt See if we want to use a system prompt
  * @param {boolean}  useTools See if we want to use tools
  * @param {PromptNames} names Prompt names
+ * @param {boolean}  [supportsPrefill] Whether the model accepts a trailing assistant turn (4.6+ reject it)
  * @returns {{messages: object[], systemPrompt: object[]}} Prompt for Anthropic
  */
-export function convertClaudeMessages(messages, prefillString, useSysPrompt, useTools, names) {
+export function convertClaudeMessages(messages, prefillString, useSysPrompt, useTools, names, supportsPrefill = true) {
     normalizeDeveloperRole(messages);
 
     let systemPrompt = [];
@@ -353,11 +360,20 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
 
     // Shouldn't be conditional anymore, messages api expects the last role to be user unless we're explicitly prefilling
     if (prefillString) {
-        messages.push({
-            role: 'assistant',
-            // Dangling whitespace are not allowed for prefilling
-            content: [{ type: 'text', text: prefillString.trimEnd() }],
-        });
+        if (supportsPrefill) {
+            messages.push({
+                role: 'assistant',
+                // Dangling whitespace are not allowed for prefilling
+                content: [{ type: 'text', text: prefillString.trimEnd() }],
+            });
+        } else if (useSysPrompt) {
+            // Claude 4.6+ reject a trailing assistant turn outright. The guide's
+            // replacement is a system prompt instruction, so redirect it there
+            // rather than dropping the user's prefill on the floor. This has to
+            // happen before the same-role merge below, or we'd end up flipping
+            // the pushed turn back to `user` and doubling the final user message.
+            systemPrompt.push({ type: 'text', text: prefillString.trimEnd() });
+        }
     }
 
     // Since the messaging endpoint only supports user assistant roles in turns, we have to merge messages with the same role if they follow eachother
@@ -1147,7 +1163,8 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
         switch (reasoningEffort) {
             case REASONING_EFFORT.auto:
                 return null;
-            case 'min':
+            case REASONING_EFFORT.min:
+            case 'minimal':
                 return 'low';
             case REASONING_EFFORT.low:
                 return 'low';
@@ -1157,7 +1174,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
                 return 'high';
             case REASONING_EFFORT.xhigh:
                 return 'xhigh';
-            case 'max':
+            case REASONING_EFFORT.max:
                 return 'max';
         }
         return null;
@@ -1167,9 +1184,10 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
 
     switch (reasoningEffort) {
         case REASONING_EFFORT.auto:
-        case 'none':
+        case REASONING_EFFORT.none:
             return null;
         case REASONING_EFFORT.min:
+        case 'minimal':
             budgetTokens = 1024;
             break;
         case REASONING_EFFORT.low:
@@ -1185,7 +1203,7 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
             budgetTokens = Math.floor(maxTokens * 0.75);
             break;
         case REASONING_EFFORT.max:
-            budgetTokens = Math.floor(maxTokens * 0.9);
+            budgetTokens = Math.floor(maxTokens * 0.95);
             break;
     }
 
@@ -1200,32 +1218,19 @@ export function calculateClaudeBudgetTokens(maxTokens, reasoningEffort, stream, 
 
 /**
  * Get the output_config.effort value for Claude adaptive thinking models.
+ * Resolves positionally against the model's own effort ladder, so a tier the
+ * model doesn't have (e.g. `xhigh` on Opus 4.6) degrades to that model's ceiling.
  * @param {string} reasoningEffort Reasoning effort setting
- * @param {string} model Model name
+ * @param {string|object} model Model name, or an already-resolved capabilities object
  * @returns {string|null} Effort level for the API, or null to use API default
  */
 export function getClaudeAdaptiveEffort(reasoningEffort, model) {
-    const hasMax = /-4-(6|7|8)|(fable|sonnet|opus)-5/.test(model);
-    const hasXhigh = /opus-4-(7|8)|(fable|sonnet|opus)-5/.test(model);
-
-    switch (reasoningEffort) {
-        case 'none':
-        case REASONING_EFFORT.auto:
-            return null;
-        case 'min':
-        case REASONING_EFFORT.low:
-            return 'low';
-        case REASONING_EFFORT.medium:
-            return 'medium';
-        case REASONING_EFFORT.high:
-            return 'high';
-        case REASONING_EFFORT.xhigh:
-            return hasXhigh ? 'xhigh' : hasMax ? 'max' : 'high';
-        case 'max':
-            return hasMax ? 'max' : 'xhigh';
-        default:
-            return null;
+    if (reasoningEffort === REASONING_EFFORT.none || reasoningEffort === REASONING_EFFORT.auto) {
+        return null;
     }
+
+    const caps = typeof model === 'object' && model !== null ? model : getClaudeCapabilities(model);
+    return resolveClaudeEffort(reasoningEffort, caps);
 }
 
 /**

@@ -18,6 +18,7 @@ import { extractReasoningFromData } from './reasoning.js';
 import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
+import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 
 const API_BASE = '/api/backends/chat-completions/claude-batch';
@@ -52,6 +53,7 @@ let maxWaitMinutes = 90;
  * @property {object} [reply] Completed reply payload, awaiting delivery
  * @property {boolean} [delivering] Guard against re-entrant delivery
  * @property {boolean} [polling] Guard against overlapping polls
+ * @property {boolean} [cancelling] Guard while a cancel is in flight
  * @property {boolean} [notified] Whether the "ready elsewhere" toast has been shown
  */
 
@@ -180,8 +182,10 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
         originalMes: job.originalMes,
     }).catch(error => console.error('Failed to persist batch delivery info.', error));
     track(job);
+    // After track(): the cancel button only shows for a job that's actually tracked.
+    refreshAllCancelButtons();
 
-    toastr.info(t`Reply will arrive here when it's done — keep using other chats meanwhile.`, t`Batch queued`, { timeOut: 8000 });
+    toastr.info(t`Reply will arrive here when it's done — cancel it from the message, or keep using other chats meanwhile.`, t`Batch queued`, { timeOut: 8000 });
     return 'queued';
 }
 
@@ -263,6 +267,40 @@ function refreshTimerAndTokenDom(index, message) {
         counterDom.textContent = counterValue;
         counterDom.title = counterTitle;
     }
+}
+
+/**
+ * Shows the per-message cancel button on a pending placeholder and hides it once the
+ * job is resolved. A batch detaches on submit — the generation is over as far as the
+ * rest of the UI is concerned, so the placeholder itself has to carry the only handle
+ * on the job. `#mes_stop` is long gone by then and `stopGeneration()` never saw it.
+ * @param {number} index Message index
+ * @param {object} message Chat message
+ */
+function refreshCancelButton(index, message) {
+    const button = document.querySelector(`#chat .mes[mesid="${index}"] .mes_batch_cancel`);
+    if (!(button instanceof HTMLElement)) {
+        return;
+    }
+
+    // Being flagged pending isn't enough: a job past maxWaitMinutes is untracked but
+    // keeps its placeholder, and cancelling needs the batchId only a tracked job has.
+    // Show the button only where it can actually do something.
+    const jobId = message?.extra?.claude_batch_pending && message?.extra?.claude_batch_job_id;
+    button.style.display = jobId && activeJobs.has(jobId) ? '' : 'none';
+}
+
+/**
+ * Repaints every cancel button in the open chat. Needed after any render that rebuilds
+ * message elements from scratch — chat load, lazy-loading older messages — since a
+ * resumed job's placeholder comes back from disk with a fresh, buttonless DOM node.
+ */
+function refreshAllCancelButtons() {
+    chat.forEach((message, index) => {
+        if (message?.extra?.claude_batch_pending) {
+            refreshCancelButton(index, message);
+        }
+    });
 }
 
 /**
@@ -348,7 +386,7 @@ async function ackJob(jobId) {
  */
 async function pollJob(jobId) {
     const job = activeJobs.get(jobId);
-    if (!job || job.delivering || job.polling) {
+    if (!job || job.delivering || job.polling || job.cancelling) {
         return;
     }
 
@@ -361,6 +399,8 @@ async function pollJob(jobId) {
         // Anthropic allows up to 24h, so the batch may well still be running.
         // Stop nagging the API but keep the job on the server: reloading resumes it.
         untrack(jobId);
+        // Cancelling needs a tracked job, so the button goes with the poller.
+        refreshAllCancelButtons();
         toastr.warning(
             t`Still not done after ${String(maxWaitMinutes)} minutes — no longer polling. Reload SillyTavern to resume waiting.`,
             t`Claude Flex batch`,
@@ -480,6 +520,7 @@ async function writeIntoChat(job, text, reasoning) {
         updateMessageBlock(index, message);
         refreshTimerAndTokenDom(index, message);
     }
+    refreshCancelButton(index, message);
 
     await eventSource.emit(event_types.MESSAGE_RECEIVED, index, job.mode);
     await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, index, job.mode);
@@ -533,6 +574,36 @@ async function deliver(job) {
 }
 
 /**
+ * Settles a job's placeholder to a final text, clearing the pending markers so both
+ * the cancel button and the per-chat generation block lift. No-op when the origin
+ * chat isn't open — the on-disk placeholder keeps its place until it is.
+ * @param {BatchJob} job Job whose placeholder is being settled
+ * @param {string} text Final message text
+ * @returns {Promise<void>}
+ */
+async function resolvePlaceholder(job, text) {
+    if (job.chatId && getCurrentChatId() !== job.chatId) {
+        return;
+    }
+
+    const index = findPlaceholderIndex(job.jobId);
+    if (index === -1) {
+        return;
+    }
+
+    const message = chat[index];
+    message.mes = text;
+    delete message.extra.claude_batch_pending;
+    delete message.extra.claude_batch_job_id;
+    if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
+        message.swipes[message.swipe_id] = message.mes;
+    }
+    updateMessageBlock(index, message);
+    refreshCancelButton(index, message);
+    await saveChatConditional();
+}
+
+/**
  * Replaces a job's placeholder with an error note.
  * @param {BatchJob} job Job that failed
  * @param {string} reason Human-readable failure reason
@@ -541,25 +612,65 @@ async function deliver(job) {
 async function failJob(job, reason) {
     toastr.error(reason, t`Batch Processing`, { timeOut: 15000 });
 
-    if (!job.chatId || getCurrentChatId() === job.chatId) {
-        const index = findPlaceholderIndex(job.jobId);
-        if (index !== -1) {
-            const message = chat[index];
-            // A failed continue should leave the message as it was, not blow it away.
-            message.mes = job.mode === 'continue'
-                ? `${job.originalMes ?? ''}\n\n*⚠️ ${reason}*`
-                : `*⚠️ ${reason}*`;
-            delete message.extra.claude_batch_pending;
-            delete message.extra.claude_batch_job_id;
-            if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
-                message.swipes[message.swipe_id] = message.mes;
-            }
-            updateMessageBlock(index, message);
-            await saveChatConditional();
-        }
-    }
+    // A failed continue should leave the message as it was, not blow it away.
+    await resolvePlaceholder(job, job.mode === 'continue'
+        ? `${job.originalMes ?? ''}\n\n*⚠️ ${reason}*`
+        : `*⚠️ ${reason}*`);
 
     await ackJob(job.jobId);
+}
+
+/**
+ * Cancels a pending batch from its placeholder's cancel button. This is the only stop
+ * control a batch has: submission detaches the generation, so by the time the job
+ * exists `#mes_stop` is hidden and `stopGeneration()` has no handle on it.
+ * @param {string} jobId Job identifier
+ * @returns {Promise<void>}
+ */
+async function cancelJob(jobId) {
+    const job = activeJobs.get(jobId);
+    if (!job || job.delivering || job.cancelling) {
+        return;
+    }
+
+    const confirmed = await callGenericPopup(
+        t`Cancel this batched reply? Anthropic drops requests that haven't started yet, but one already in progress may still finish and be billed.`,
+        POPUP_TYPE.CONFIRM,
+    );
+
+    // The reply may have landed while the popup sat open.
+    if (confirmed !== POPUP_RESULT.AFFIRMATIVE || !activeJobs.has(jobId)) {
+        return;
+    }
+
+    // Hold the poller off rather than untracking: a cancel that doesn't reach the
+    // server has to leave the job exactly as it found it, still being waited on.
+    job.cancelling = true;
+    let cancelled = false;
+    try {
+        const response = await postBatch('cancel', { jobId, batchId: job.batchId });
+        // The endpoint drops the persisted job for any answer it gets back from
+        // Anthropic, refusals included; only its own 500 leaves the job on the server.
+        cancelled = response.status !== 500;
+        if (!response.ok) {
+            console.warn('Claude batch cancel was refused upstream.', response.status);
+        }
+    } catch (error) {
+        console.error('Claude batch cancel error.', error);
+    } finally {
+        job.cancelling = false;
+    }
+
+    if (!cancelled) {
+        toastr.error(t`Couldn't reach the batch endpoint — the reply is still on its way.`, t`Batch Processing`, { timeOut: 12000 });
+        return;
+    }
+
+    untrack(jobId);
+    // A cancelled continue reverts to exactly what it was — the user knows why, so
+    // there's nothing to annotate, and the message stays immediately re-continuable.
+    await resolvePlaceholder(job, job.mode === 'continue' ? (job.originalMes ?? '') : '*🚫 Batch cancelled.*');
+    toastr.info(t`Batch cancelled.`, t`Batch Processing`, { timeOut: 6000 });
 }
 
 /**
@@ -574,6 +685,28 @@ export async function initClaudeBatchTracker() {
             if (job.reply && job.chatId === currentChatId) {
                 await deliver(job);
             }
+        }
+        // After the deliveries, so a placeholder that just got filled isn't handed a
+        // cancel button for a job that no longer exists.
+        refreshAllCancelButtons();
+    });
+
+    // Lazy-loading rebuilds message elements from the template, losing button state;
+    // swiping left off a placeholder swaps `extra` out from under it and back again.
+    eventSource.on(event_types.MORE_MESSAGES_LOADED, () => refreshAllCancelButtons());
+    eventSource.on(event_types.MESSAGE_SWIPED, () => refreshAllCancelButtons());
+
+    // Delegated: placeholders come and go, and a resumed one is rendered by the chat
+    // loader long before this module knows the job exists.
+    document.addEventListener('click', event => {
+        const button = event.target instanceof Element ? event.target.closest('.mes_batch_cancel') : null;
+        if (!button) {
+            return;
+        }
+        const index = Number(button.closest('.mes')?.getAttribute('mesid'));
+        const jobId = chat[index]?.extra?.claude_batch_job_id;
+        if (jobId) {
+            cancelJob(jobId);
         }
     });
 
@@ -611,6 +744,10 @@ export async function initClaudeBatchTracker() {
                 originalMes: stored.originalMes,
             });
         }
+
+        // The open chat may have been rendered before this ran, so its restored
+        // placeholders are still sitting there without a cancel button.
+        refreshAllCancelButtons();
 
         if (activeJobs.size) {
             console.info(`Resumed ${activeJobs.size} Claude batch job(s).`);

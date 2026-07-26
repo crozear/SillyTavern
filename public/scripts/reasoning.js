@@ -1366,6 +1366,9 @@ function setReasoningEventHandlers() {
         message.extra.reasoning = '';
         delete message.extra.reasoning_type;
         delete message.extra.reasoning_duration;
+        // No reasoning left to attribute tokens to, so the counter goes back to a
+        // single total (which, as before, still covers the tokens that were spent).
+        delete message.extra.reasoning_token_count;
         await saveChatConditional();
         updateMessageBlock(messageId, message);
         const textarea = messageBlock.find('.reasoning_edit_textarea');

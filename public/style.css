@@ -625,6 +625,11 @@ input[type='checkbox']:focus-visible {
     text-align: center;
 }
 
+/* The split "thinking + reply" form is long enough to break across lines. */
+.mes .tokenCounterDisplay {
+    white-space: nowrap;
+}
+
 .mes_translate,
 .sd_message_gen,
 .mes_ghost,

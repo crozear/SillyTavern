@@ -2614,7 +2614,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     const timestamp = momentDate.isValid() ? momentDate.format('LL LT') : '';
     const messageHTML = getMessageTextHTML(mes, { messageId });
     const bookmarkLink = mes?.extra?.bookmark_link;
-    const tokenCount = mes.extra?.token_count;
+    const { counterValue, counterTitle } = formatTokenCounter(mes.extra);
     const { timerValue, timerTitle } = formatGenerationTimer(mes.gen_started, mes.gen_finished, mes.extra?.token_count, mes.extra?.reasoning_duration, mes.extra?.time_to_first_token);
 
     messageElement.attr({
@@ -2634,7 +2634,7 @@ export function updateMessageElement(mes, { messageId = chat.length - 1, message
     messageElement.find('.ch_name .name_text').text(mes.name);
     messageElement.find('.timestamp').text(timestamp).attr('title', `${mes.extra?.api ? mes.extra.api + ' - ' : ''}${mes.extra?.model ?? ''}`);
     messageElement.find('.mesIDDisplay').text(`#${messageId}`);
-    tokenCount && messageElement.find('.tokenCounterDisplay').text(`${tokenCount}t`);
+    counterValue && messageElement.find('.tokenCounterDisplay').attr('title', counterTitle).text(counterValue);
     mes.title && messageElement.attr('title', mes.title);
     timerValue && messageElement.find('.mes_timer').attr('title', timerTitle).text(timerValue);
     bookmarkLink && updateBookmarkDisplay(messageElement);
@@ -2710,7 +2710,7 @@ export function formatCharacterAvatar(characterAvatar) {
  * console.log(timerValue); // 1.2s
  * console.log(timerTitle); // Generation queued: 12:34:56 7 Jan 2021\nReply received: 12:34:57 7 Jan 2021\nTime to generate: 1.2 seconds\nToken rate: 5 t/s
  */
-function formatGenerationTimer(gen_started, gen_finished, tokenCount, reasoningDuration = null, timeToFirstToken = null) {
+export function formatGenerationTimer(gen_started, gen_finished, tokenCount, reasoningDuration = null, timeToFirstToken = null) {
     if (!gen_started || !gen_finished) {
         return {};
     }
@@ -2734,6 +2734,70 @@ function formatGenerationTimer(gen_started, gen_finished, tokenCount, reasoningD
     }
 
     return { timerValue, timerTitle };
+}
+
+/**
+ * Computes and stores a message's token counts: the total, plus the share of it that
+ * was spent thinking.
+ *
+ * Providers report one merged output token count — no API breaks it down into
+ * thinking vs. reply — so the split is derived. The reply half is tokenized from the
+ * text directly, since that string is exactly what was produced; the thinking half is
+ * the remainder, which absorbs both tokenizer drift and the gap between hidden
+ * thinking and the summary of it that some models return. The two therefore always
+ * add up to the reported total.
+ * @param {object} extra Message `extra` object (mutated in place)
+ * @param {string} text Message text
+ * @param {string} reasoning Reasoning text ('' if the message didn't reason)
+ * @param {number?} [reportedTotal=null] Provider-reported output token count, if any
+ * @returns {Promise<number>} The stored total
+ */
+export async function updateMessageTokenCount(extra, text, reasoning, reportedTotal = null) {
+    const replyTokens = await getTokenCountAsync(text || '', 0);
+    const total = Number.isFinite(reportedTotal) && reportedTotal > 0
+        ? reportedTotal
+        : replyTokens + (reasoning ? await getTokenCountAsync(reasoning, 0) : 0);
+
+    extra.token_count = total;
+
+    if (reasoning) {
+        extra.reasoning_token_count = Math.max(0, total - replyTokens);
+    } else {
+        delete extra.reasoning_token_count;
+    }
+
+    return total;
+}
+
+/**
+ * Formats the token counter display for a message, splitting thinking from reply when
+ * the message reasoned.
+ * @param {object} [extra] Message `extra` object
+ * @returns {{counterValue: string, counterTitle: string}} Counter text and its tooltip
+ * @example
+ * const { counterValue } = formatTokenCounter({ token_count: 1198, reasoning_token_count: 812 });
+ * console.log(counterValue); // 812t + 386t
+ */
+export function formatTokenCounter(extra) {
+    const total = extra?.token_count;
+    if (!total) {
+        return { counterValue: '', counterTitle: '' };
+    }
+
+    const thinkingTokens = extra?.reasoning_token_count;
+    if (!thinkingTokens) {
+        return { counterValue: `${total}t`, counterTitle: `${total} tokens` };
+    }
+
+    const replyTokens = Math.max(0, total - thinkingTokens);
+    return {
+        counterValue: `${thinkingTokens}t + ${replyTokens}t`,
+        counterTitle: [
+            `Thinking: ${thinkingTokens} tokens`,
+            `Reply: ${replyTokens} tokens`,
+            `Total: ${total} tokens`,
+        ].join('\n'),
+    };
 }
 
 let requestId = null;
@@ -3676,17 +3740,18 @@ class StreamingProcessor {
             // For other providers, fall back to local tokenization of reasoning + text.
             let currentTokenCount = 0;
             if (isFinal && power_user.message_token_count_enabled) {
-                if (this.outputTokens != null) {
-                    currentTokenCount = this.outputTokens;
-                } else {
-                    const tokenCountText = this.reasoningHandler.reasoning + processedText;
-                    currentTokenCount = await getTokenCountAsync(tokenCountText, 0);
-                }
+                currentTokenCount = await updateMessageTokenCount(
+                    chat[messageId].extra,
+                    processedText,
+                    this.reasoningHandler.reasoning,
+                    this.outputTokens,
+                );
             }
             if (currentTokenCount) {
-                chat[messageId].extra.token_count = currentTokenCount;
+                const { counterValue, counterTitle } = formatTokenCounter(chat[messageId].extra);
                 if (this.messageTokenCounterDom instanceof HTMLElement) {
-                    this.messageTokenCounterDom.textContent = `${currentTokenCount}t`;
+                    this.messageTokenCounterDom.textContent = counterValue;
+                    this.messageTokenCounterDom.title = counterTitle;
                 }
             }
 
@@ -3751,6 +3816,7 @@ class StreamingProcessor {
         if (Array.isArray(this.swipes) && this.swipes.length > 0) {
             const swipeInfoExtra = structuredClone(message.extra ?? {});
             delete swipeInfoExtra.token_count;
+            delete swipeInfoExtra.reasoning_token_count;
             delete swipeInfoExtra.reasoning;
             delete swipeInfoExtra.reasoning_duration;
             const swipeInfo = {
@@ -6740,8 +6806,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.reasoning_signature = reasoningSignature;
             await processImageAttachment(lastMessage, { imageUrls });
             if (power_user.message_token_count_enabled) {
-                const tokenCountText = (reasoning || '') + lastMessage.mes;
-                lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+                await updateMessageTokenCount(lastMessage.extra, lastMessage.mes, reasoning);
             }
             const chat_id = (chat.length - 1);
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
@@ -6765,8 +6830,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         lastMessage.extra.reasoning_signature = reasoningSignature;
         await processImageAttachment(lastMessage, { imageUrls });
         if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + lastMessage.mes;
-            lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            await updateMessageTokenCount(lastMessage.extra, lastMessage.mes, reasoning);
         }
         const chat_id = (chat.length - 1);
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
@@ -6787,8 +6851,9 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         await processImageAttachment(lastMessage, { imageUrls });
         // We don't know if the reasoning duration extended, so we don't update it here on purpose.
         if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + lastMessage.mes;
-            lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            // Reasoning was appended to, so count what's on the message rather than the
+            // incoming chunk — otherwise the thinking half only covers the last append.
+            await updateMessageTokenCount(lastMessage.extra, lastMessage.mes, lastMessage.extra.reasoning);
         }
         const chat_id = (chat.length - 1);
         !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
@@ -6816,8 +6881,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.gen_finished = generationFinished;
 
         if (power_user.message_token_count_enabled) {
-            const tokenCountText = (reasoning || '') + newMessage.mes;
-            newMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            await updateMessageTokenCount(newMessage.extra, newMessage.mes, reasoning);
         }
 
         if (selected_group) {
@@ -6867,6 +6931,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
     if (Array.isArray(swipes) && swipes.length > 0) {
         const swipeInfoExtra = structuredClone(item.extra ?? {});
         delete swipeInfoExtra.token_count;
+        delete swipeInfoExtra.reasoning_token_count;
         delete swipeInfoExtra.reasoning;
         delete swipeInfoExtra.reasoning_duration;
         const swipeInfo = {
@@ -10336,7 +10401,7 @@ export async function swipe(event, direction, { source, repeated, message = chat
             thisMesDiv.find('.mes_text').html('...');
             // resets the timer
             thisMesDiv.find('.mes_timer').html('');
-            thisMesDiv.find('.tokenCounterDisplay').text('');
+            thisMesDiv.find('.tokenCounterDisplay').removeAttr('title').text('');
             updateReasoningUI(thisMesDiv, { reset: true });
         } else {
             //console.log('showing previously generated swipe candidate, or "..."');
@@ -10352,10 +10417,9 @@ export async function swipe(event, direction, { source, repeated, message = chat
                     chat[mesId].extra = {};
                 }
 
-                const tokenCountText = (chat[mesId]?.extra?.reasoning || '') + chat[mesId].mes;
-                const tokenCount = await getTokenCountAsync(tokenCountText, 0);
-                chat[mesId].extra.token_count = tokenCount;
-                thisMesDiv.find('.tokenCounterDisplay').text(`${tokenCount}t`);
+                await updateMessageTokenCount(chat[mesId].extra, chat[mesId].mes, chat[mesId].extra.reasoning || '');
+                const { counterValue, counterTitle } = formatTokenCounter(chat[mesId].extra);
+                thisMesDiv.find('.tokenCounterDisplay').attr('title', counterTitle).text(counterValue);
             }
         }
 
@@ -11056,8 +11120,7 @@ function addDebugFunctions() {
                 message.extra = {};
             }
 
-            const tokenCountText = (message?.extra?.reasoning || '') + message.mes;
-            message.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
+            await updateMessageTokenCount(message.extra, message.mes, message.extra.reasoning || '');
         }
 
         await saveChatConditional();

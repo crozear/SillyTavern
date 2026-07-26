@@ -101,6 +101,8 @@ declare global {
         title?: string;
         isSmallSys?: boolean;
         token_count?: number;
+        /** Share of `token_count` spent on reasoning. Absent if the message didn't reason. */
+        reasoning_token_count?: number;
         /** When false, the message cannot be swiped. */
         swipeable?: boolean;
         overswipe_behavior?: OVERSWIPE_BEHAVIOR;

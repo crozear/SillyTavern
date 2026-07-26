@@ -4,12 +4,15 @@ import {
     event_types,
     eventSource,
     extractMessageFromData,
+    formatGenerationTimer,
+    formatTokenCounter,
     getCurrentChatId,
     getRequestHeaders,
     name2,
     saveChatConditional,
     saveReply,
     updateMessageBlock,
+    updateMessageTokenCount,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
 import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
@@ -210,12 +213,77 @@ async function placeholderFor(job) {
     message.extra.claude_batch_job_id = job.jobId;
     message.extra.claude_batch_pending = true;
 
+    // saveReply timed and counted the placeholder text itself ("0.0s", a handful of
+    // tokens). Blank both — delivery fills them with the real wait and output size.
+    // gen_started stays: it's the clock the elapsed time is measured from.
+    message.gen_finished = undefined;
+    delete message.extra.token_count;
+    delete message.extra.reasoning_token_count;
+    refreshTimerAndTokenDom(chat.length - 1, message);
+
     if (job.mode === 'swipe') {
         // Deliver into this exact slot even if the user swipes around while waiting.
         job.swipeId = message.swipe_id ?? 0;
     }
 
     await saveChatConditional();
+}
+
+/**
+ * Repaints a message's generation timer and token counter from the message object.
+ * `updateMessageBlock` doesn't touch either — the synchronous paths own them through
+ * `addOneMessage` or the streaming processor's cached DOM refs, neither of which runs
+ * for a batch delivery.
+ * @param {number} index Message index
+ * @param {object} message Chat message
+ */
+function refreshTimerAndTokenDom(index, message) {
+    const element = document.querySelector(`#chat .mes[mesid="${index}"]`);
+    if (!element) {
+        return;
+    }
+
+    const { timerValue, timerTitle } = formatGenerationTimer(
+        message.gen_started,
+        message.gen_finished,
+        message.extra?.token_count,
+        message.extra?.reasoning_duration,
+        message.extra?.time_to_first_token,
+    );
+
+    const timerDom = element.querySelector('.mes_timer');
+    if (timerDom) {
+        timerDom.textContent = timerValue ?? '';
+        timerDom.title = timerTitle ?? '';
+    }
+
+    const { counterValue, counterTitle } = formatTokenCounter(message.extra);
+    const counterDom = element.querySelector('.tokenCounterDisplay');
+    if (counterDom) {
+        counterDom.textContent = counterValue;
+        counterDom.title = counterTitle;
+    }
+}
+
+/**
+ * Stores a delivered reply's token counts. Passes the API's own `output_tokens` (the
+ * `out:` in the server's usage line) as the total, since it counts the thinking
+ * tokens the visible reasoning only summarizes. A continuation is the exception:
+ * `output_tokens` covers just the appended part, but the counter describes the whole
+ * message, so it falls back to counting locally.
+ * @param {BatchJob} job Job being delivered
+ * @param {object} extra Message `extra` object (mutated in place)
+ * @param {string} text Final message text
+ * @param {string} reasoning Reasoning text
+ * @returns {Promise<number>} Token count, or 0 when the counter is disabled
+ */
+async function countReplyTokens(job, extra, text, reasoning) {
+    if (!power_user.message_token_count_enabled) {
+        return 0;
+    }
+
+    const reportedTotal = job.mode === 'continue' ? null : job.reply?.usage?.output_tokens;
+    return await updateMessageTokenCount(extra, text, reasoning, reportedTotal);
 }
 
 /**
@@ -367,6 +435,13 @@ async function writeIntoChat(job, text, reasoning) {
         // Placeholder is gone (deleted, or the chat was rolled back). Append instead
         // of guessing where it belonged.
         await saveReply({ type: 'normal', getMessage: text, reasoning });
+        const appended = chat[chat.length - 1];
+        // saveReply timed this against the generation that produced the placeholder,
+        // which for a resumed job may be from a previous session entirely.
+        appended.gen_started = new Date(job.createdAt);
+        appended.gen_finished = new Date();
+        await countReplyTokens(job, appended.extra, appended.mes, reasoning);
+        refreshTimerAndTokenDom(chat.length - 1, appended);
         await saveChatConditional();
         return true;
     }
@@ -379,7 +454,10 @@ async function writeIntoChat(job, text, reasoning) {
     message.extra.reasoning = reasoning || '';
     delete message.extra.claude_batch_pending;
     delete message.extra.claude_batch_job_id;
+    message.gen_started = message.gen_started ?? new Date(job.createdAt);
     message.gen_finished = new Date();
+
+    await countReplyTokens(job, message.extra, finalText, reasoning);
 
     // Fill the slot this job reserved. For a swipe that's the slot captured at submit,
     // which may not be the one on screen if the user swiped around while waiting.
@@ -391,6 +469,8 @@ async function writeIntoChat(job, text, reasoning) {
         message.swipes[slotId] = finalText;
         if (Array.isArray(message.swipe_info) && message.swipe_info[slotId]) {
             message.swipe_info[slotId].extra = structuredClone(message.extra);
+            message.swipe_info[slotId].gen_started = message.gen_started;
+            message.swipe_info[slotId].gen_finished = message.gen_finished;
         }
     }
 
@@ -398,6 +478,7 @@ async function writeIntoChat(job, text, reasoning) {
     if (isSlotOnScreen) {
         message.mes = finalText;
         updateMessageBlock(index, message);
+        refreshTimerAndTokenDom(index, message);
     }
 
     await eventSource.emit(event_types.MESSAGE_RECEIVED, index, job.mode);

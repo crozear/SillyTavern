@@ -1723,9 +1723,46 @@ class PromptManager {
             counts[message.identifier] = message.getTokens();
         });
 
+        this.reattributeInjectedTokens(messages, counts);
+
         this.tokenUsage = this.tokenHandler.getTotal();
 
         this.log('Updated token usage with ' + this.tokenUsage);
+    }
+
+    /**
+     * Move the tokens of in-chat injections off the collection they were merged into and onto
+     * the prompt they came from. Without this a prompt set to In-Chat — Vector Storage pulling
+     * a Data Bank query, for one — reports no tokens of its own while silently inflating the
+     * chat history row.
+     *
+     * Tokens are moved, never added, so the total is unchanged. An injection can never claim
+     * more than the turn carrying it, which keeps the donor row from going negative when
+     * several prompts share a turn and each was counted with its own per-message overhead.
+     *
+     * @param {import('./openai.js').MessageCollection} messages - The assembled chat completion.
+     * @param {Object<string, number>} counts - Token counts keyed by prompt identifier.
+     */
+    reattributeInjectedTokens(messages, counts) {
+        for (const item of messages.getCollection()) {
+            const donor = item.identifier;
+            const children = typeof item.flatten === 'function' ? item.flatten() : [item];
+
+            for (const message of children) {
+                if (!Array.isArray(message.injectedPrompts) || !message.injectedPrompts.length) continue;
+
+                let claimable = message.getTokens();
+
+                for (const { identifier, tokens } of message.injectedPrompts) {
+                    const claimed = Math.min(tokens, claimable);
+                    if (claimed <= 0) continue;
+
+                    counts[identifier] = (counts[identifier] ?? 0) + claimed;
+                    counts[donor] = (counts[donor] ?? 0) - claimed;
+                    claimable -= claimed;
+                }
+            }
+        }
     }
 
     /**

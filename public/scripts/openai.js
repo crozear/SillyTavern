@@ -1100,6 +1100,36 @@ export function formatWorldInfo(value, { wiFormat = null } = {}) {
 }
 
 /**
+ * Count the tokens each in-chat prompt contributes to the turn it gets injected into.
+ * Injections sharing a depth, order and role are merged into one chat message, so their
+ * tokens land on chat history unless the prompt manager is told which row produced each
+ * part.
+ *
+ * @param {Prompt[]} prompts - Prompts merged into a single injected message.
+ * @param {string} role - Role of the injected message.
+ * @returns {Promise<{identifier: string, tokens: number}[]>} Per-prompt token attribution.
+ */
+async function getInjectedPromptTokens(prompts, role) {
+    const attribution = [];
+
+    for (const prompt of prompts) {
+        // Trimmed before substitution and prepared the same way, so this reproduces the merged
+        // message byte for byte when a prompt is alone at its depth. That makes the count exact
+        // and, since the tokenizer caches by content hash, free — the message reuses the result.
+        const content = promptManager.preparePrompt({ ...prompt, content: String(prompt.content ?? '').trim() }).content;
+
+        if (!content) {
+            continue;
+        }
+
+        const tokens = await countTokensOpenAIAsync({ role, content });
+        attribution.push({ identifier: prompt.identifier, tokens });
+    }
+
+    return attribution;
+}
+
+/**
  * This function populates the injections in the conversation.
  *
  * @param {Prompt[]} prompts - Array containing injection prompts.
@@ -1166,7 +1196,8 @@ async function populationInjectionPrompts(prompts, messages) {
                 const jointPrompt = [rolePrompts, extensionPrompt].filter(x => x).map(x => x.trim()).join(separator);
 
                 if (jointPrompt && jointPrompt.length) {
-                    roleMessages.push({ 'role': role, 'content': jointPrompt, injected: true, cache_breakpoint: cacheBreakpoint });
+                    const injectedPrompts = await getInjectedPromptTokens(promptsForRole, role);
+                    roleMessages.push({ 'role': role, 'content': jointPrompt, injected: true, cache_breakpoint: cacheBreakpoint, injectedPrompts: injectedPrompts });
                 }
             }
         }
@@ -1261,6 +1292,12 @@ async function populateChatHistory(messages, prompts, chatCompletion, type = nul
         const prompt = new Prompt(chatPrompt);
         prompt.identifier = `chatHistory-${messages.length - index}`;
         const chatMessage = await Message.fromPromptAsync(promptManager.preparePrompt(prompt));
+
+        // Bookkeeping for the token display only, so it is kept off the Prompt: it must not
+        // reach the request, and it only counts once the message survives the budget below.
+        if (Array.isArray(chatPrompt.injectedPrompts)) {
+            chatMessage.injectedPrompts = chatPrompt.injectedPrompts;
+        }
 
         if (promptManager.serviceSettings.names_behavior === character_names_behavior.COMPLETION && prompt.name) {
             const messageName = promptManager.isValidName(prompt.name) ? prompt.name : promptManager.sanitizeName(prompt.name);
@@ -4041,6 +4078,12 @@ class Message {
     reasoning = null;
     /** @type {string} One of CACHE_BREAKPOINT_POSITION. */
     cache_breakpoint = CACHE_BREAKPOINT_POSITION.NONE;
+    /**
+     * Prompt manager rows merged into this message by an in-chat injection, with the tokens
+     * each one contributed. Never sent to the API — see {@link PromptManager#populateTokenCounts}.
+     * @type {{identifier: string, tokens: number}[]}
+     */
+    injectedPrompts = [];
 
     /**
      * @constructor

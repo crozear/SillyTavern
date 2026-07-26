@@ -1745,11 +1745,15 @@ class PromptManager {
      */
     reattributeInjectedTokens(messages, counts) {
         for (const item of messages.getCollection()) {
+            // Collections are keyed by prompt order index, so the array is sparse. `for...of`
+            // yields the holes as undefined where the `forEach` above skips them outright.
+            if (!item) continue;
+
             const donor = item.identifier;
             const children = typeof item.flatten === 'function' ? item.flatten() : [item];
 
             for (const message of children) {
-                if (!Array.isArray(message.injectedPrompts) || !message.injectedPrompts.length) continue;
+                if (!Array.isArray(message?.injectedPrompts) || !message.injectedPrompts.length) continue;
 
                 let claimable = message.getTokens();
 

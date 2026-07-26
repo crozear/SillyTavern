@@ -1326,3 +1326,186 @@ describe('cachingAtDepthForOpenRouterClaude', () => {
         expect(typeof messages[1].content).toBe('string');
     });
 });
+
+describe('manual cache breakpoints', () => {
+    const names = makeNames('Char', 'User');
+
+    test('marks a system prompt block and strips the internal marker', () => {
+        const messages = [
+            { role: 'system', content: 'A' },
+            { role: 'system', content: 'B', cache_breakpoint: true },
+            { role: 'system', content: 'C' },
+            { role: 'user', content: 'hi' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(1);
+        expect(result.systemPrompt[1]).toEqual({ type: 'text', text: 'B', cache_control: { type: 'ephemeral', ttl: '5m' } });
+        expect(JSON.stringify(result)).not.toContain('__st_manual_cache_breakpoint');
+    });
+
+    test('survives the same-role merge by riding on the content block', () => {
+        const messages = [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'one', cache_breakpoint: true },
+            { role: 'user', content: 'two' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '1h');
+
+        expect(result.messages).toHaveLength(1);
+        expect(result.messages[0].content).toEqual([
+            { type: 'text', text: 'one', cache_control: { type: 'ephemeral', ttl: '1h' } },
+            { type: 'text', text: 'two' },
+        ]);
+    });
+
+    test('caps at four and drops the overflow markers entirely', () => {
+        const messages = [{ role: 'system', content: 'sys' }];
+        for (let i = 0; i < 6; i++) {
+            messages.push({ role: i % 2 ? 'user' : 'assistant', content: `m${i}`, cache_breakpoint: true });
+        }
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(mod.MAX_CLAUDE_CACHE_BREAKPOINTS);
+        const json = JSON.stringify(result);
+        expect(json).not.toContain('__st_manual_cache_breakpoint');
+        expect(json.match(/cache_control/g)).toHaveLength(4);
+    });
+
+    test('applies nothing when the limit is zero', () => {
+        const messages = [{ role: 'system', content: 'sys', cache_breakpoint: true }, { role: 'user', content: 'hi' }];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m', 0);
+
+        expect(applied).toBe(0);
+        expect(JSON.stringify(result)).not.toContain('cache_');
+    });
+
+    test('does not leak the flag as a message property', () => {
+        const messages = [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi', cache_breakpoint: true }];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        expect(Object.keys(result.messages[0]).sort()).toEqual(['content', 'role']);
+    });
+
+    test('lets cachingAtDepth respect a remaining budget', () => {
+        const messages = [
+            { role: 'user', content: [{ type: 'text', text: 'a' }] },
+            { role: 'assistant', content: [{ type: 'text', text: 'b' }] },
+            { role: 'user', content: [{ type: 'text', text: 'c' }] },
+        ];
+        mod.cachingAtDepthForClaude(messages, 0, '5m', 1);
+        expect(JSON.stringify(messages).match(/cache_control/g)).toHaveLength(1);
+    });
+
+    test('does not charge the budget for a block that already has a breakpoint', () => {
+        const messages = [
+            { role: 'user', content: [{ type: 'text', text: 'a' }] },
+            { role: 'assistant', content: [{ type: 'text', text: 'b' }] },
+            { role: 'user', content: [{ type: 'text', text: 'c', cache_control: { type: 'ephemeral', ttl: '5m' } }] },
+        ];
+        mod.cachingAtDepthForClaude(messages, 0, '5m', 1);
+        // Depth 0 is already covered by the manual breakpoint, so the budget still buys depth 2.
+        expect(JSON.stringify(messages).match(/cache_control/g)).toHaveLength(2);
+    });
+
+    test('places a "before" breakpoint on the preceding system block', () => {
+        const messages = [
+            { role: 'system', content: 'A' },
+            { role: 'system', content: 'B' },
+            { role: 'system', content: 'volatile', cache_breakpoint: 'before' },
+            { role: 'user', content: 'hi' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(1);
+        expect(result.systemPrompt[1].cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
+        expect(result.systemPrompt[2].cache_control).toBeUndefined();
+    });
+
+    test('drops a "before" breakpoint on the very first system block', () => {
+        const messages = [
+            { role: 'system', content: 'A', cache_breakpoint: 'before' },
+            { role: 'user', content: 'hi' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(0);
+        expect(JSON.stringify(result)).not.toContain('cache_');
+    });
+
+    test('places a "before" breakpoint on the previous message', () => {
+        const messages = [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'stable' },
+            { role: 'assistant', content: 'reply' },
+            { role: 'user', content: 'retrieved chunks', cache_breakpoint: 'before' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(1);
+        expect(result.messages[1].content.at(-1).cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
+        expect(result.messages[2].content.at(-1).cache_control).toBeUndefined();
+    });
+
+    test('falls back to the system prompt when "before" is the first message', () => {
+        const messages = [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'retrieved chunks', cache_breakpoint: 'before' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(1);
+        expect(result.systemPrompt.at(-1).cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
+        expect(JSON.stringify(result.messages)).not.toContain('cache_');
+    });
+
+    test('a "before" breakpoint survives the same-role merge on the previous turn', () => {
+        const messages = [
+            { role: 'system', content: 'sys' },
+            { role: 'user', content: 'one' },
+            { role: 'user', content: 'two', cache_breakpoint: 'before' },
+            { role: 'user', content: 'three' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(result.messages).toHaveLength(1);
+        expect(result.messages[0].content).toEqual([
+            { type: 'text', text: 'one', cache_control: { type: 'ephemeral', ttl: '5m' } },
+            { type: 'text', text: 'two' },
+            { type: 'text', text: 'three' },
+        ]);
+    });
+
+    test('collapses "after" and "before" that name the same boundary', () => {
+        const messages = [
+            { role: 'system', content: 'A', cache_breakpoint: 'after' },
+            { role: 'system', content: 'B', cache_breakpoint: 'before' },
+            { role: 'user', content: 'hi' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        const applied = mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(applied).toBe(1);
+        expect(JSON.stringify(result).match(/cache_control/g)).toHaveLength(1);
+    });
+
+    test('treats an unknown breakpoint value as "after"', () => {
+        const messages = [
+            { role: 'system', content: 'A', cache_breakpoint: true },
+            { role: 'system', content: 'B' },
+            { role: 'user', content: 'hi' },
+        ];
+        const result = mod.convertClaudeMessages(messages, '', true, false, names);
+        mod.applyManualCacheBreakpointsForClaude(result.systemPrompt, result.messages, '5m');
+
+        expect(result.systemPrompt[0].cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
+    });
+});

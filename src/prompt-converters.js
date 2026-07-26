@@ -5,6 +5,30 @@ import { getClaudeCapabilities, resolveClaudeEffort } from './constants.js';
 const PROMPT_PLACEHOLDER = getConfigValue('promptPlaceholder', 'Let\'s get started.');
 
 /**
+ * Hard limit on `cache_control` blocks in a single Anthropic request, counted
+ * across tools + system + messages. Exceeding it is a 400 from the API.
+ * @type {number}
+ */
+export const MAX_CLAUDE_CACHE_BREAKPOINTS = 4;
+
+/**
+ * Internal marker left on a content block by {@link convertClaudeMessages} when the
+ * frontend asked for a manual cache breakpoint there. It is never sent to the API:
+ * {@link applyManualCacheBreakpointsForClaude} always strips it, either promoting it
+ * to a real `cache_control` or dropping it when the budget is spent.
+ * @type {string}
+ */
+const CACHE_BREAKPOINT_MARKER = '__st_manual_cache_breakpoint';
+
+/**
+ * Value of a message's `cache_breakpoint` asking for the prefix to end just *before* the
+ * message instead of after it. Any other truthy value means "after", which keeps requests
+ * from clients that predate the position working.
+ * @type {string}
+ */
+const CACHE_BREAKPOINT_BEFORE = 'before';
+
+/**
  * Normalizes developer role messages to system role.
  * The developer role is OpenAI-specific; other providers treat it as system.
  * @param {object[]} messages Array of messages
@@ -238,7 +262,20 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
                     messages[i].content = `${names.charName}: ${messages[i].content}`;
                 }
             }
-            systemPrompt.push({ type: 'text', text: messages[i].content });
+            const systemBlock = { type: 'text', text: messages[i].content };
+            systemPrompt.push(systemBlock);
+
+            // A "before" breakpoint terminates the cached prefix on the block preceding the
+            // prompt, which is what keeps volatile content out of the prefix instead of
+            // invalidating it. Nothing precedes the first block, so that request is dropped.
+            if (messages[i].cache_breakpoint === CACHE_BREAKPOINT_BEFORE) {
+                const previousBlock = systemPrompt[systemPrompt.length - 2];
+                if (previousBlock) {
+                    previousBlock[CACHE_BREAKPOINT_MARKER] = true;
+                }
+            } else if (messages[i].cache_breakpoint) {
+                systemBlock[CACHE_BREAKPOINT_MARKER] = true;
+            }
         }
 
         messages.splice(0, i);
@@ -253,9 +290,15 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
         }
     }
 
+    // Manual cache breakpoints from the prompt manager, indexed by message. They are noted
+    // here and resolved after the loop, because the property sweep at the end of each
+    // iteration removes the flag while the blocks it points at are not all normalized yet.
+    /** @type {string[]} */
+    const cacheBreakpoints = [];
+
     // Now replace all further messages that have the role 'system' with the role 'user'. (or all if we're not using one)
     const parse = (str) => typeof str === 'string' ? JSON.parse(str) : str;
-    messages.forEach((message) => {
+    messages.forEach((message, index) => {
         if (message.role === 'assistant' && message.tool_calls) {
             message.content = message.tool_calls.map((tc) => ({
                 type: 'tool_use',
@@ -330,6 +373,10 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
             });
         }
 
+        if (message.cache_breakpoint) {
+            cacheBreakpoints[index] = message.cache_breakpoint;
+        }
+
         // Remove all non-standard properties (extensions may add arbitrary fields like 'source')
         for (const key of Object.keys(message)) {
             if (key !== 'role' && key !== 'content') {
@@ -337,6 +384,25 @@ export function convertClaudeMessages(messages, prefillString, useSysPrompt, use
             }
         }
     });
+
+    // A breakpoint has to ride on a content block rather than on the message: the same-role
+    // merge further down concatenates content arrays, so a message-level flag would be lost
+    // while a block keeps its place — and the prefix it terminates — inside the merged turn.
+    for (let i = 0; i < messages.length; i++) {
+        if (!cacheBreakpoints[i]) {
+            continue;
+        }
+
+        // "before" ends the prefix on whatever precedes the prompt: the previous message, or
+        // the tail of the system prompt when it is the first message in the conversation.
+        const blocks = cacheBreakpoints[i] === CACHE_BREAKPOINT_BEFORE
+            ? (i > 0 ? messages[i - 1].content : systemPrompt)
+            : messages[i].content;
+
+        if (Array.isArray(blocks) && blocks.length) {
+            blocks[blocks.length - 1][CACHE_BREAKPOINT_MARKER] = true;
+        }
+    }
 
     // Images in assistant messages should be moved to the next user message
     for (let i = 0; i < messages.length; i++) {
@@ -1017,8 +1083,9 @@ export function convertTextCompletionPrompt(messages) {
  * @param {any[]} messages Messages to modify
  * @param {number} cachingAtDepth Depth at which caching is supposed to occur
  * @param {string} ttl TTL value
+ * @param {number} [limit] How many breakpoints may still be spent, out of the request's budget of four
  */
-export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
+export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl, limit = Number.POSITIVE_INFINITY) {
     let passedThePrefill = false;
     let depth = 0;
     let previousRoleName = '';
@@ -1033,7 +1100,13 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
         if (messages[i].role !== previousRoleName) {
             if (depth === cachingAtDepth || depth === cachingAtDepth + 2) {
                 const content = messages[i].content;
-                content[content.length - 1].cache_control = { type: 'ephemeral', ttl };
+                const block = content[content.length - 1];
+                // A manual breakpoint already sitting here costs nothing extra, so it
+                // isn't charged against the remaining budget.
+                if (!block.cache_control && limit > 0) {
+                    block.cache_control = { type: 'ephemeral', ttl };
+                    limit -= 1;
+                }
             }
 
             if (depth === cachingAtDepth + 2) {
@@ -1044,6 +1117,56 @@ export function cachingAtDepthForClaude(messages, cachingAtDepth, ttl) {
             previousRoleName = messages[i].role;
         }
     }
+}
+
+/**
+ * Promotes the manual cache breakpoints left by {@link convertClaudeMessages} into real
+ * `cache_control` blocks, trimming anything past the budget. Markers are always removed,
+ * so nothing internal can leak into the request body. Directly modifies the arguments.
+ * @param {any[]} systemPrompt Converted system prompt blocks
+ * @param {any[]} messages Converted messages
+ * @param {string} ttl TTL value
+ * @param {number} [limit] Maximum number of breakpoints to apply
+ * @returns {number} How many breakpoints were applied
+ */
+export function applyManualCacheBreakpointsForClaude(systemPrompt, messages, ttl, limit = MAX_CLAUDE_CACHE_BREAKPOINTS) {
+    const marked = [];
+    const collect = (content) => {
+        if (!Array.isArray(content)) {
+            return;
+        }
+        for (const block of content) {
+            if (block && block[CACHE_BREAKPOINT_MARKER]) {
+                marked.push(block);
+            }
+        }
+    };
+
+    collect(systemPrompt);
+    for (const message of Array.isArray(messages) ? messages : []) {
+        collect(message?.content);
+    }
+
+    let applied = 0;
+    for (const block of marked) {
+        delete block[CACHE_BREAKPOINT_MARKER];
+
+        if (applied >= limit) {
+            continue;
+        }
+
+        block.cache_control = { type: 'ephemeral', ttl };
+        applied += 1;
+    }
+
+    if (marked.length > applied) {
+        const reason = limit > 0
+            ? `a request fits at most ${MAX_CLAUDE_CACHE_BREAKPOINTS} of them`
+            : 'prompt caching is disabled';
+        console.warn(`Claude: ignoring ${marked.length - applied} of ${marked.length} manual cache breakpoint(s), ${reason}.`);
+    }
+
+    return applied;
 }
 
 /**

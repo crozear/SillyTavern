@@ -36,8 +36,10 @@ import {
 import { getGroupNames, selected_group } from './group-chats.js';
 
 import {
+    CACHE_BREAKPOINT_POSITION,
     chatCompletionDefaultPrompts,
     INJECTION_POSITION,
+    normalizeCacheBreakpoint,
     Prompt,
     PromptManager,
     promptManagerDefaultPromptOrders,
@@ -1144,10 +1146,18 @@ async function populationInjectionPrompts(prompts, messages) {
             // Order of priority for roles (most important go lower)
             const roles = ['system', 'developer', 'user', 'assistant'];
             for (const role of roles) {
-                const rolePrompts = orderPrompts
-                    .filter(prompt => prompt.role === role)
+                const promptsForRole = orderPrompts.filter(prompt => prompt.role === role);
+                const rolePrompts = promptsForRole
                     .map(x => x.content)
                     .join(separator);
+                // Injections at the same depth and order collapse into a single turn, so a
+                // breakpoint can only land on one of its two edges. "Before" wins when both
+                // are asked for, since that is the edge that keeps the volatile injected
+                // content out of the cached prefix.
+                const breakpoints = promptsForRole.map(prompt => normalizeCacheBreakpoint(prompt.cache_breakpoint));
+                const cacheBreakpoint = breakpoints.find(x => x === CACHE_BREAKPOINT_POSITION.BEFORE)
+                    ?? breakpoints.find(Boolean)
+                    ?? CACHE_BREAKPOINT_POSITION.NONE;
 
                 // Get extension prompt
                 const extensionPrompt = order === extensionPromptsOrder
@@ -1156,7 +1166,7 @@ async function populationInjectionPrompts(prompts, messages) {
                 const jointPrompt = [rolePrompts, extensionPrompt].filter(x => x).map(x => x.trim()).join(separator);
 
                 if (jointPrompt && jointPrompt.length) {
-                    roleMessages.push({ 'role': role, 'content': jointPrompt, injected: true });
+                    roleMessages.push({ 'role': role, 'content': jointPrompt, injected: true, cache_breakpoint: cacheBreakpoint });
                 }
             }
         }
@@ -1540,7 +1550,9 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
     // Add ordered system and user prompts
     const systemPrompts = ['nsfw', 'jailbreak'];
     const userRelativePrompts = prompts.collection
-        .filter((prompt) => false === prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE)
+        // Markers are placed by whatever owns their content, never by this pass — picking one
+        // up here would put it in the request a second time.
+        .filter((prompt) => false === prompt.system_prompt && !prompt.marker && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE)
         .reduce((acc, prompt) => {
             acc.push(prompt.identifier);
             return acc;
@@ -1595,6 +1607,12 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
     for (const key of knownPrompts) {
         if (prompts.has(key)) {
             const prompt = prompts.get(key);
+            // Now that these have prompt manager entries their position can be switched to
+            // In-Chat, which the injection pass below handles. Injecting here as well would
+            // put the same content in the request twice.
+            if (prompt.injection_position === INJECTION_POSITION.ABSOLUTE) {
+                continue;
+            }
             if (prompt.position) {
                 await injectToMain(prompt, prompt.position);
             }
@@ -1783,6 +1801,10 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
             prompt.injection_order = collectionPrompt.injection_order ?? prompt.injection_order;
             // Role (system, user, assistant)
             prompt.role = collectionPrompt.role ?? prompt.role;
+            // Manual cache breakpoint. These markers pull their content from elsewhere but
+            // still resolve to a single message, so the flag has to survive the swap below —
+            // the collection entry is replaced wholesale by a prompt built from this literal.
+            prompt.cache_breakpoint = collectionPrompt.cache_breakpoint ?? prompt.cache_breakpoint;
         }
 
         const newPrompt = promptManager.preparePrompt(prompt);
@@ -4017,6 +4039,8 @@ class Message {
     signature = null;
     /** @type {string?} */
     reasoning = null;
+    /** @type {string} One of CACHE_BREAKPOINT_POSITION. */
+    cache_breakpoint = CACHE_BREAKPOINT_POSITION.NONE;
 
     /**
      * @constructor
@@ -4306,8 +4330,10 @@ class Message {
      * @param {Object} prompt - The prompt object.
      * @returns {Promise<Message>} A new instance of Message.
      */
-    static fromPromptAsync(prompt) {
-        return Message.createAsync(prompt.role, prompt.content, prompt.identifier);
+    static async fromPromptAsync(prompt) {
+        const message = await Message.createAsync(prompt.role, prompt.content, prompt.identifier);
+        message.cache_breakpoint = normalizeCacheBreakpoint(prompt.cache_breakpoint);
+        return message;
     }
 
     /**
@@ -4357,6 +4383,7 @@ class MessageCollection {
                     ...(message.role === 'tool' && { tool_call_id: message.identifier }),
                     ...(message.signature && { signature: message.signature }),
                     ...(message.reasoning && { reasoning: message.reasoning }),
+                    ...(message.cache_breakpoint && isCacheBreakpointSupported() && { cache_breakpoint: message.cache_breakpoint }),
                 });
             }
             return acc;
@@ -4479,6 +4506,12 @@ export class ChatCompletion {
             }
 
             const shouldSquash = (message) => {
+                // A cache breakpoint marks the end of a cached prefix, so the message has to
+                // keep its own boundary — squashing it into a neighbour would move the
+                // breakpoint off the content the user actually pointed at.
+                if (message.cache_breakpoint && isCacheBreakpointSupported()) {
+                    return false;
+                }
                 return !excludeList.includes(message.identifier) && (message.role === 'system' || message.role === 'developer') && !message.name;
             };
 
@@ -4677,6 +4710,7 @@ export class ChatCompletion {
                     ...(item.role === 'tool' ? { tool_call_id: item.identifier } : {}),
                     ...(item.signature ? { signature: item.signature } : {}),
                     ...(item.reasoning ? { reasoning: item.reasoning } : {}),
+                    ...(item.cache_breakpoint && isCacheBreakpointSupported() ? { cache_breakpoint: item.cache_breakpoint } : {}),
                 };
                 chat.push(message);
             } else {
@@ -7018,6 +7052,17 @@ function getEffectiveToolReasoningMode(settings = oai_settings) {
     }
 
     return getToolReasoningMode(settings);
+}
+
+/**
+ * Check if manual per-prompt cache breakpoints apply to the current source.
+ * Gates both the request payload and anything the prompt manager does with the flag,
+ * so the marker never reaches a provider that would reject an unknown message field.
+ * @param {ChatCompletionSettings} settings Settings object to use
+ * @returns {boolean} True if cache breakpoints set in the prompt manager should be sent
+ */
+export function isCacheBreakpointSupported(settings = oai_settings) {
+    return settings.chat_completion_source === chat_completion_sources.CLAUDE;
 }
 
 /**

@@ -32,6 +32,54 @@ const DEFAULT_DEPTH = 4;
 const DEFAULT_ORDER = 100;
 
 /**
+ * Markers whose content is pulled from elsewhere but still resolves to exactly one
+ * message. They behave like ordinary prompts once assembled, so they can be edited
+ * and can carry a cache breakpoint — unlike `chatHistory` and `dialogueExamples`,
+ * which expand into a whole collection with no single block to end a prefix on.
+ * @type {string[]}
+ */
+const SINGLE_MESSAGE_MARKERS = [
+    'charDescription',
+    'charPersonality',
+    'scenario',
+    'personaDescription',
+    'worldInfoBefore',
+    'worldInfoAfter',
+    'vectorsMemory',
+    'vectorsDataBank',
+    'smartContext',
+];
+
+/**
+ * Where a manual Claude cache breakpoint sits relative to the prompt carrying it.
+ * @enum {string}
+ */
+export const CACHE_BREAKPOINT_POSITION = {
+    NONE: '',
+    AFTER: 'after',
+    BEFORE: 'before',
+};
+
+/**
+ * Coerce a stored or user-supplied cache breakpoint value into one of the three
+ * supported states. Anything unrecognized means "no breakpoint", and a bare `true`
+ * is read as "after" so presets saved before the position existed keep working.
+ * @param {unknown} value - Raw value from a prompt or a form field.
+ * @returns {string} One of {@link CACHE_BREAKPOINT_POSITION}.
+ */
+export function normalizeCacheBreakpoint(value) {
+    if (value === CACHE_BREAKPOINT_POSITION.BEFORE) {
+        return CACHE_BREAKPOINT_POSITION.BEFORE;
+    }
+
+    if (value === CACHE_BREAKPOINT_POSITION.AFTER || value === true) {
+        return CACHE_BREAKPOINT_POSITION.AFTER;
+    }
+
+    return CACHE_BREAKPOINT_POSITION.NONE;
+}
+
+/**
  * @enum {number}
  */
 export const INJECTION_POSITION = {
@@ -145,6 +193,13 @@ class Prompt {
     forbid_overrides;
 
     /**
+     * Ends a Claude prompt cache prefix just before or just after this prompt.
+     * One of {@link CACHE_BREAKPOINT_POSITION}.
+     * @type {string}
+     */
+    cache_breakpoint;
+
+    /**
      * Prompt is added by an extension.
      * @type {boolean}
      */
@@ -177,9 +232,10 @@ class Prompt {
      * @param {number} [param0.injection_order] - The order of the prompt in the chat.
      * @param {string[]} [param0.injection_trigger] - The generation type trigger for the prompt injection.
      * @param {boolean} [param0.forbid_overrides] - Indicates if the prompt should not be overridden.
+     * @param {string} [param0.cache_breakpoint] - Ends a Claude prompt cache prefix just before or just after this prompt.
      * @param {boolean} [param0.extension] - Prompt is added by an extension.
      */
-    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, extension, injection_order, injection_trigger } = {}) {
+    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, cache_breakpoint, extension, injection_order, injection_trigger } = {}) {
         this.identifier = identifier;
         this.role = role;
         this.content = content;
@@ -189,6 +245,7 @@ class Prompt {
         this.injection_depth = injection_depth;
         this.injection_position = injection_position;
         this.forbid_overrides = forbid_overrides;
+        this.cache_breakpoint = normalizeCacheBreakpoint(cache_breakpoint);
         this.extension = extension ?? false;
         this.injection_order = injection_order ?? DEFAULT_ORDER;
         this.injection_trigger = injection_trigger ?? [];
@@ -306,6 +363,9 @@ class PromptManager {
             personaDescription: t`Persona Description`,
             worldInfoBefore: t`World Info (↑Char)`,
             worldInfoAfter: t`World Info (↓Char)`,
+            vectorsMemory: t`Vector Storage (Chat)`,
+            vectorsDataBank: t`Vector Storage (Data Bank)`,
+            smartContext: t`Smart Context`,
         };
     }
 
@@ -555,6 +615,7 @@ class PromptManager {
             const orderBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_order_block'));
             const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
             const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+            const cacheBreakpointField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_cache_breakpoint'));
             const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
             const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
@@ -572,6 +633,8 @@ class PromptManager {
             orderBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
             forbidOverridesField.checked = prompt.forbid_overrides ?? false;
             forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
+            cacheBreakpointField.value = normalizeCacheBreakpoint(prompt.cache_breakpoint);
+            cacheBreakpointField.disabled = !this.isCacheBreakpointAllowed(prompt);
             promptField.disabled = prompt.marker ?? false;
             entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
 
@@ -908,6 +971,7 @@ class PromptManager {
         const injectionOrderField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_order'));
         const injectionTriggerField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_trigger'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
+        const cacheBreakpointField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_cache_breakpoint'));
 
         prompt.name = nameField.value;
         prompt.role = roleField.value;
@@ -917,6 +981,7 @@ class PromptManager {
         prompt.injection_order = Number(injectionOrderField.value);
         prompt.injection_trigger = Array.from(injectionTriggerField.selectedOptions).map(option => option.value);
         prompt.forbid_overrides = forbidOverridesField.checked;
+        prompt.cache_breakpoint = normalizeCacheBreakpoint(cacheBreakpointField.value);
     }
 
     /**
@@ -962,7 +1027,11 @@ class PromptManager {
         const promptOrder = this.getPromptOrderForCharacter(character);
         const index = promptOrder.findIndex(entry => entry.identifier === prompt.identifier);
 
-        if (-1 === index) promptOrder.unshift({ identifier: prompt.identifier, enabled: false });
+        // A prompt without a toggle has to come back enabled, or the row would render greyed
+        // out with no control to switch it on again.
+        const enabled = !this.isPromptToggleAllowed(prompt);
+
+        if (-1 === index) promptOrder.unshift({ identifier: prompt.identifier, enabled: enabled });
     }
 
     /**
@@ -1007,17 +1076,25 @@ class PromptManager {
         this.serviceSettings.prompts = this.serviceSettings.prompts ?? [];
         this.serviceSettings.prompt_order = this.serviceSettings.prompt_order ?? [];
 
+        // Check whether the referenced prompts are present. Prompts added here are also the
+        // only ones that get a list entry below, so a row the user detached on purpose is
+        // not silently put back on every load.
+        let addedPrompts = [];
+        if (this.serviceSettings.prompts.length === 0) {
+            this.setPrompts(structuredClone(chatCompletionDefaultPrompts.prompts));
+        } else {
+            addedPrompts = this.checkForMissingPrompts(this.serviceSettings.prompts);
+        }
+
         if ('global' === this.configuration.promptOrder.strategy) {
             const dummyCharacter = { id: this.configuration.promptOrder.dummyId };
             const promptOrder = this.getPromptOrderForCharacter(dummyCharacter);
 
             if (0 === promptOrder.length) this.addPromptOrderForCharacter(dummyCharacter, promptManagerDefaultPromptOrder);
+            else this.addMissingPromptOrderEntries(dummyCharacter, addedPrompts);
         }
 
-        // Check whether the referenced prompts are present.
-        this.serviceSettings.prompts.length === 0
-            ? this.setPrompts(chatCompletionDefaultPrompts.prompts)
-            : this.checkForMissingPrompts(this.serviceSettings.prompts);
+        this.addMissingPromptOrderEntries(this.activeCharacter, addedPrompts);
 
         // Add identifiers if there are none assigned to a prompt
         this.serviceSettings.prompts.forEach(prompt => prompt && (prompt.identifier = prompt.identifier ?? this.getUuidv4()));
@@ -1039,6 +1116,7 @@ class PromptManager {
      * and if all mandatory system prompts for a character are present.
      *
      * @param prompts
+     * @returns {string[]} Identifiers of the prompts that were added.
      */
     checkForMissingPrompts(prompts) {
         const defaultPromptIdentifiers = chatCompletionDefaultPrompts.prompts.reduce((list, prompt) => { list.push(prompt.identifier); return list; }, []);
@@ -1047,13 +1125,52 @@ class PromptManager {
             !prompts.some(prompt => prompt.identifier === identifier),
         );
 
+        const addedIdentifiers = [];
         missingIdentifiers.forEach(identifier => {
             const defaultPrompt = chatCompletionDefaultPrompts.prompts.find(prompt => prompt?.identifier === identifier);
             if (defaultPrompt) {
-                prompts.push(defaultPrompt);
+                // Cloned, or editing the prompt in one preset would write through to the
+                // shared default and leak into every other preset that restores from it.
+                prompts.push(structuredClone(defaultPrompt));
+                addedIdentifiers.push(identifier);
                 this.log(`Missing system prompt: ${defaultPrompt.identifier}. Added default.`);
             }
         });
+
+        return addedIdentifiers;
+    }
+
+    /**
+     * Gives a list entry to prompts that were just restored into a preset, so a default added
+     * after that preset was saved has somewhere to be configured instead of only existing at
+     * generation time. Only runs for prompts restored in the same pass: a row the user
+     * detached is still in the preset, so it is never handed back unasked.
+     *
+     * Entries land next to the main prompt, which is what these are positioned relative to.
+     *
+     * @param {object|null} character - The character whose prompt order should be topped up.
+     * @param {string[]} identifiers - Identifiers eligible for a new entry.
+     * @returns {void}
+     */
+    addMissingPromptOrderEntries(character, identifiers) {
+        const promptOrder = this.getPromptOrderForCharacter(character);
+
+        // An empty order is not yet initialized, and gets the full defaults elsewhere.
+        if (0 === promptOrder.length) return;
+
+        const mainIndex = promptOrder.findIndex(entry => entry?.identifier === 'main');
+        let insertAt = -1 === mainIndex ? promptOrder.length : mainIndex + 1;
+
+        for (const identifier of identifiers) {
+            if (promptOrder.some(entry => entry?.identifier === identifier)) continue;
+
+            // Follow the shipped default, so restoring something like Enhance Definitions
+            // brings back its row without also switching it on.
+            const defaultEntry = promptManagerDefaultPromptOrder.find(entry => entry.identifier === identifier);
+            promptOrder.splice(insertAt, 0, { identifier: identifier, enabled: defaultEntry?.enabled ?? true });
+            insertAt += 1;
+            this.log(`Missing prompt order entry: ${identifier}. Added default.`);
+        }
     }
 
     /**
@@ -1066,11 +1183,24 @@ class PromptManager {
     }
 
     /**
-     * Check whether a prompt can be deleted. System prompts cannot be deleted.
+     * Check whether a prompt can be deleted from the preset entirely. System prompts cannot
+     * be deleted, and neither can markers: their content belongs to whatever produces it, so
+     * there would be nothing to delete and {@link checkForMissingPrompts} would restore the
+     * entry on the next load anyway.
      * @param {Prompt} prompt - The prompt to check.
      * @returns {boolean} True if the prompt can be deleted, false otherwise.
      */
     isPromptDeletionAllowed(prompt) {
+        return false === prompt.system_prompt && !prompt.marker;
+    }
+
+    /**
+     * Check whether a prompt can be detached from the list. Detaching only removes the row,
+     * leaving the prompt in the preset so it can be put back from the insert dropdown.
+     * @param {Prompt} prompt - The prompt to check.
+     * @returns {boolean} True if the prompt can be detached, false otherwise.
+     */
+    isPromptDetachAllowed(prompt) {
         return false === prompt.system_prompt;
     }
 
@@ -1080,15 +1210,16 @@ class PromptManager {
      * @returns {boolean} True if the prompt can be edited, false otherwise.
      */
     isPromptEditAllowed(prompt) {
-        const forceEditPrompts = [
-            'charDescription',
-            'charPersonality',
-            'scenario',
-            'personaDescription',
-            'worldInfoBefore',
-            'worldInfoAfter',
-        ];
-        return forceEditPrompts.includes(prompt.identifier) || !prompt.marker;
+        return SINGLE_MESSAGE_MARKERS.includes(prompt.identifier) || !prompt.marker;
+    }
+
+    /**
+     * Check whether a prompt can carry a manual cache breakpoint.
+     * @param {Prompt} prompt - The prompt to check.
+     * @returns {boolean} True if a breakpoint can be placed on the prompt, false otherwise.
+     */
+    isCacheBreakpointAllowed(prompt) {
+        return SINGLE_MESSAGE_MARKERS.includes(prompt.identifier) || !prompt.marker;
     }
 
     /**
@@ -1366,6 +1497,7 @@ class PromptManager {
         const injectionOrderBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_order_block'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
         const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+        const cacheBreakpointField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_cache_breakpoint'));
         const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
         const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
         const isPulledPrompt = Object.keys(this.promptSources).includes(prompt.identifier);
@@ -1386,6 +1518,8 @@ class PromptManager {
         injectionPositionField.removeAttribute('disabled');
         forbidOverridesField.checked = prompt.forbid_overrides ?? false;
         forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
+        cacheBreakpointField.value = normalizeCacheBreakpoint(prompt.cache_breakpoint);
+        cacheBreakpointField.disabled = !this.isCacheBreakpointAllowed(prompt);
         entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
 
         if (isPulledPrompt) {
@@ -1479,6 +1613,7 @@ class PromptManager {
         const injectionTriggerField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_trigger'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
         const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+        const cacheBreakpointField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_cache_breakpoint'));
         const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
         const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
@@ -1495,6 +1630,8 @@ class PromptManager {
         injectionOrderBlock.style.visibility = 'unset';
         forbidOverridesBlock.style.visibility = 'unset';
         forbidOverridesField.checked = false;
+        cacheBreakpointField.value = CACHE_BREAKPOINT_POSITION.NONE;
+        cacheBreakpointField.disabled = false;
         entrySourceBlock.style.display = 'none';
         entrySource.textContent = '';
 
@@ -1692,7 +1829,7 @@ class PromptManager {
             const calculatedTokens = tokens ? tokens : '-';
 
             let detachSpanHtml = '';
-            if (this.isPromptDeletionAllowed(prompt)) {
+            if (this.isPromptDetachAllowed(prompt)) {
                 detachSpanHtml = `
                     <span title="Remove" class="prompt-manager-detach-action caution fa-solid fa-chain-broken fa-xs"></span>
                 `;
@@ -1737,6 +1874,11 @@ class PromptManager {
             const roleIcon = promptRoles[iconLookup]?.roleIcon || '';
             const roleTitle = promptRoles[iconLookup]?.roleTitle || '';
 
+            const cacheBreakpoint = this.isCacheBreakpointAllowed(prompt) ? normalizeCacheBreakpoint(prompt.cache_breakpoint) : CACHE_BREAKPOINT_POSITION.NONE;
+            const cacheBreakpointTitle = cacheBreakpoint === CACHE_BREAKPOINT_POSITION.BEFORE
+                ? t`Cache breakpoint before this prompt (Claude only)`
+                : t`Cache breakpoint after this prompt (Claude only)`;
+
             listItemHtml += `
                 <li class="${prefix}prompt_manager_prompt ${draggableClass} ${enabledClass} ${markerClass} ${importantClass}" data-pm-identifier="${escapeHtml(prompt.identifier)}">
                     <span class="drag-handle">☰</span>
@@ -1750,6 +1892,7 @@ class PromptManager {
                         ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
                         ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : ''}
                         ${isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : ''}
+                        ${cacheBreakpoint ? `<small class="fa-solid fa-database prompt-manager-cache-breakpoint prompt-manager-cache-breakpoint-${cacheBreakpoint}" title="${escapeHtml(cacheBreakpointTitle)}"></small>` : ''}
                     </span>
                     <span>
                             <span class="prompt_manager_prompt_controls">
@@ -2078,6 +2221,27 @@ const chatCompletionDefaultPrompts = {
             'system_prompt': true,
             'marker': true,
         },
+        // Not flagged as system prompts, so an unused one can be detached from the list and
+        // put back later from the footer's insert dropdown. Detaching only hides the row —
+        // the extension keeps injecting, it just has nothing left to configure.
+        {
+            'identifier': 'vectorsMemory',
+            'name': 'Vector Storage (Chat)',
+            'system_prompt': false,
+            'marker': true,
+        },
+        {
+            'identifier': 'vectorsDataBank',
+            'name': 'Vector Storage (Data Bank)',
+            'system_prompt': false,
+            'marker': true,
+        },
+        {
+            'identifier': 'smartContext',
+            'name': 'Smart Context',
+            'system_prompt': false,
+            'marker': true,
+        },
     ],
 };
 
@@ -2088,6 +2252,18 @@ const promptManagerDefaultPromptOrders = {
 const promptManagerDefaultPromptOrder = [
     {
         'identifier': 'main',
+        'enabled': true,
+    },
+    {
+        'identifier': 'vectorsMemory',
+        'enabled': true,
+    },
+    {
+        'identifier': 'vectorsDataBank',
+        'enabled': true,
+    },
+    {
+        'identifier': 'smartContext',
         'enabled': true,
     },
     {

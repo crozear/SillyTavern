@@ -51,6 +51,8 @@ import {
     convertXAIMessages,
     cachingAtDepthForOpenRouterClaude,
     cachingAtDepthForClaude,
+    applyManualCacheBreakpointsForClaude,
+    MAX_CLAUDE_CACHE_BREAKPOINTS,
     getPromptNames,
     calculateClaudeBudgetTokens,
     getClaudeAdaptiveEffort,
@@ -1586,6 +1588,18 @@ function buildClaudeRequestBody(request, apiKey) {
     const manualThinkingActive = caps.thinkingMode !== 'none' && !useAdaptiveThinking && !wantsThinkingOff && reasoningEffort !== 'auto';
     const allowPrefill = caps.supportsPrefill && !manualThinkingActive;
     const convertedPrompt = convertClaudeMessages(request.body.messages, request.body.assistant_prefill, useSystemPrompt, useTools, getPromptNames(request), allowPrefill);
+    // Cache breakpoints set by hand in the prompt manager are resolved first: they are an
+    // explicit per-prompt choice, so they claim slots from the request's budget of four
+    // before the automatic system/tools/depth breakpoints below get a look in. The master
+    // "Enable system prompt caching" switch still gates them, so turning caching off really
+    // does mean no cache writes.
+    const manualCacheBreakpoints = applyManualCacheBreakpointsForClaude(
+        convertedPrompt.systemPrompt,
+        convertedPrompt.messages,
+        cacheTTL,
+        enableSystemPromptCache ? MAX_CLAUDE_CACHE_BREAKPOINTS : 0,
+    );
+    let cacheBreakpointBudget = MAX_CLAUDE_CACHE_BREAKPOINTS - manualCacheBreakpoints;
     const useWebSearch = caps.supportsWebSearch && Boolean(request.body.enable_web_search);
     const taskBudgetEnabled = caps.supportsTaskBudget && Boolean(request.body.claude_task_budget_enabled);
     // openai.js already sends this on every request; it mirrors the "Show Thoughts" setting.
@@ -1617,7 +1631,12 @@ function buildClaudeRequestBody(request, apiKey) {
     };
     if (useSystemPrompt) {
         if (enableSystemPromptCache && Array.isArray(convertedPrompt.systemPrompt) && convertedPrompt.systemPrompt.length) {
-            convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+            const lastSystemBlock = convertedPrompt.systemPrompt[convertedPrompt.systemPrompt.length - 1];
+            // Already covered when the user marked the final system prompt by hand.
+            if (!lastSystemBlock.cache_control && cacheBreakpointBudget > 0) {
+                lastSystemBlock.cache_control = { type: 'ephemeral', ttl: cacheTTL };
+                cacheBreakpointBudget -= 1;
+            }
         }
 
         requestBody.system = convertedPrompt.systemPrompt;
@@ -1632,10 +1651,11 @@ function buildClaudeRequestBody(request, apiKey) {
             .map(tool => tool.function)
             .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
-        if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1) {
+        if (enableSystemPromptCache && requestBody.tools.length && cachingAtDepth !== -1 && cacheBreakpointBudget > 0) {
             // Must match the system/messages TTL: longer-TTL breakpoints have to
             // precede shorter ones, and tools come first in the cache hierarchy
             requestBody.tools[requestBody.tools.length - 1].cache_control = { type: 'ephemeral', ttl: cacheTTL };
+            cacheBreakpointBudget -= 1;
         }
     }
     // Structured output is a forced tool
@@ -1658,7 +1678,7 @@ function buildClaudeRequestBody(request, apiKey) {
     }
 
     if (cachingAtDepth !== -1) {
-        cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL);
+        cachingAtDepthForClaude(convertedPrompt.messages, cachingAtDepth, cacheTTL, cacheBreakpointBudget);
     }
 
     if (enableSystemPromptCache || cachingAtDepth !== -1) {

@@ -2791,7 +2791,7 @@ export function formatTokenCounter(extra) {
 
     const replyTokens = Math.max(0, total - thinkingTokens);
     return {
-        counterValue: `${thinkingTokens}t + ${replyTokens}t`,
+        counterValue: `T:${thinkingTokens}\nR:${replyTokens}`,
         counterTitle: [
             `Thinking: ${thinkingTokens} tokens`,
             `Reply: ${replyTokens} tokens`,

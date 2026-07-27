@@ -635,7 +635,6 @@ export const CLAUDE_MODEL_CAPABILITIES = [
             samplingMode: 'none',
             effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
             thinkingDisplay: true,
-            supportsTaskBudget: true,
             supportsWebSearch: true,
             contextWindow: 1000000,
             maxOutput: 128000,

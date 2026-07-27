@@ -645,7 +645,6 @@ export const settingsToUpdate = {
     claude_use_adaptive_thinking: ['#claude_use_adaptive_thinking', 'claude_use_adaptive_thinking', true, false],
     claude_task_budget_enabled: ['#claude_task_budget_enabled', 'claude_task_budget_enabled', true, false],
     claude_task_budget_total: ['#claude_task_budget_total', 'claude_task_budget_total', false, false],
-    claude_task_budget_max_iterations: ['#claude_task_budget_max_iterations', 'claude_task_budget_max_iterations', false, false],
     word_replacement_enabled: ['#word_replacement_enabled', 'word_replacement_enabled', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     pro_reasoning_mode: ['#openai_pro_reasoning_mode', 'pro_reasoning_mode', true, false],
@@ -772,7 +771,6 @@ export const default_settings = {
     claude_use_adaptive_thinking: true,
     claude_task_budget_enabled: false,
     claude_task_budget_total: 64000,
-    claude_task_budget_max_iterations: 25,
     word_replacement_enabled: true,
     service_tier: service_tier_types.flex,
     reasoning_effort: reasoning_effort_types.auto,
@@ -3288,7 +3286,6 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.claude_extendedTTL = settings.claude_extendedTTL;
         generate_data.claude_task_budget_enabled = settings.claude_task_budget_enabled;
         generate_data.claude_task_budget_total = Number(settings.claude_task_budget_total);
-        generate_data.claude_task_budget_max_iterations = Number(settings.claude_task_budget_max_iterations);
         generate_data.stop = getCustomStoppingStrings(); // Claude shouldn't have limits on stop strings.
         // Don't add a prefill on quiet gens (summarization) and when using continue prefill.
         if (type !== 'quiet' && !(type === 'continue' && settings.continue_prefill)) {
@@ -7933,11 +7930,6 @@ export function initOpenAI() {
 
     $('#claude_task_budget_total').on('input', function () {
         oai_settings.claude_task_budget_total = Number($(this).val());
-        saveSettingsDebounced();
-    });
-
-    $('#claude_task_budget_max_iterations').on('input', function () {
-        oai_settings.claude_task_budget_max_iterations = Number($(this).val());
         saveSettingsDebounced();
     });
 

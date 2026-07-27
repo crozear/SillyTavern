@@ -2307,7 +2307,7 @@
                                             <span>Task Budget</span>
                                         </label>
                                         <div class="toggle-description justifyLeft marginBot5">
-                                            Advisory token budget for agentic loops on Opus 4.7 and later (4.7, 4.8, Opus 5, Sonnet 5, Fable 5). The model self-regulates to finish gracefully as the budget is consumed. Ignored on older models.
+                                            Advisory token budget for agentic loops on Opus 4.7, Opus 4.8, Opus 5, and Fable 5. The model self-regulates to finish gracefully as the budget is consumed. Ignored on unsupported models.
                                         </div>
                                         <div id="claude_task_budget_total_block"  data-source="claude" style="display: none;">
                                             <label for="claude_task_budget_total" class="widthFreeExpand">
@@ -2316,13 +2316,6 @@
                                             <input id="claude_task_budget_total" type="number" min="20000" step="1000" value="64000" class="text_pole widthNatural" />
                                             <div class="toggle-description justifyLeft marginBot5">
                                                 Total token budget across the agentic loop (minimum 20,000).
-                                            </div>
-                                            <label for="claude_task_budget_max_iterations" class="widthFreeExpand">
-                                                <span>Max Iterations</span>
-                                            </label>
-                                            <input id="claude_task_budget_max_iterations" type="number" min="1" max="50" step="1" value="25" class="text_pole widthNatural" />
-                                            <div class="toggle-description justifyLeft marginBot5">
-                                                Maximum number of tool-call loop iterations before stopping (1–50).
                                             </div>
                                         </div>
                                     </div>

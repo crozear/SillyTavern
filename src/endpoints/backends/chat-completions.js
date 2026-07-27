@@ -1475,7 +1475,7 @@ function buildClaudeRequestBody(request, apiKey) {
     }
 
     if (caps.thinkingMode !== 'none') {
-        // Fable 5 / Mythos 5 think unconditionally: both `disabled` and manual
+        // Fable 5 think unconditionally: both `disabled` and manual
         // budget_tokens are a 400, so "None" simply has nothing to send.
         const forcedOn = wantsThinkingOff && caps.canDisableThinking === 'never';
         if (forcedOn) {

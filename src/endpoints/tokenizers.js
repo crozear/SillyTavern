@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ import { SentencePieceProcessor } from '@agnai/sentencepiece-js';
 import tiktoken from 'tiktoken';
 
 import { convertClaudePrompt } from '../prompt-converters.js';
+import { readSecret, SECRET_KEYS } from './secrets.js';
 import { TEXTGEN_TYPES } from '../constants.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { getConfigValue, isValidUrl } from '../util.js';
@@ -1033,6 +1035,135 @@ router.post('/openai/count', async function (req, res) {
         const jsonBody = JSON.stringify(req.body);
         const num_tokens = guesstimate(jsonBody);
         res.send({ 'token_count': num_tokens });
+    }
+});
+
+/**
+ * Counts a message against Anthropic's live count_tokens endpoint.
+ *
+ * The bundled Claude tokenizer is the pre-4.7 one, so it reads roughly 30% low on
+ * newer models. count_tokens is free and separately rate limited, so newer models
+ * are counted against it instead of guessing with a multiplier.
+ *
+ * Two deliberate imprecisions, both small and both in the safe direction:
+ *  - Every fragment is counted as a standalone one-message request, so each carries
+ *    the API's fixed per-request framing (~10 tokens). Summed over a prompt that
+ *    overcounts by a few hundred tokens out of a six-figure budget — noise next to
+ *    the 30% error it replaces, and overcounting never blows the context window.
+ *  - Role is normalized to user. We're counting content; role framing is part of
+ *    that same fixed overhead, and it keeps a lone assistant fragment from being
+ *    rejected for not starting on a user turn.
+ *
+ * Any failure at all — no key, proxy down, rate limited, offline — falls through to
+ * the local tokenizer, so counting degrades rather than breaking.
+ */
+const API_CLAUDE_TOKENIZER = 'https://api.anthropic.com/v1';
+
+/** Keep in sync with CLAUDE_NEW_TOKENIZER_MODELS in public/scripts/openai.js. */
+const CLAUDE_NEW_TOKENIZER_MODELS = /^claude-(?:fable|[a-z]+-(?:[5-9](?:$|[-.])|4-[7-9]))/;
+
+/**
+ * Remote counts cached by model + content hash. SillyTavern's own token cache is
+ * keyed per chat, so without this the same character card gets recounted against
+ * the API every time you open a different chat that uses it.
+ * @type {Map<string, number>}
+ */
+const remoteClaudeCountCache = new Map();
+const REMOTE_CLAUDE_CACHE_LIMIT = 4096;
+
+router.post('/remote/claude/count', async function (request, response) {
+    /**
+     * Counts with the bundled tokenizer instead. Used for every failure path.
+     * @param {object[]} messages Messages to count
+     */
+    async function countLocally(messages) {
+        try {
+            const instance = await claude_tokenizer.get();
+            if (!instance) throw new Error('Failed to load the Claude tokenizer');
+            return response.send({ 'token_count': countWebTokenizerTokens(instance, messages), 'remote': false });
+        } catch (error) {
+            console.error(error);
+            return response.send({ 'token_count': guesstimate(JSON.stringify(messages)), 'remote': false });
+        }
+    }
+
+    if (!request.body) {
+        return response.sendStatus(400);
+    }
+
+    const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
+    const model = String(request.body.model || '');
+
+    if (!CLAUDE_NEW_TOKENIZER_MODELS.test(model)) {
+        return countLocally(messages);
+    }
+
+    // Nothing to count: the API rejects an empty message, and the answer is 0 anyway.
+    const content = messages[0]?.content;
+    const isEmpty = messages.length === 0
+        || (typeof content === 'string' && content.length === 0)
+        || (Array.isArray(content) && content.length === 0)
+        || content === undefined
+        || content === null;
+
+    if (isEmpty) {
+        return response.send({ 'token_count': 0, 'remote': true });
+    }
+
+    const cacheKey = `${model}-${crypto.createHash('sha1').update(JSON.stringify(messages)).digest('hex')}`;
+    if (remoteClaudeCountCache.has(cacheKey)) {
+        return response.send({ 'token_count': remoteClaudeCountCache.get(cacheKey), 'remote': true });
+    }
+
+    try {
+        const apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE_TOKENIZER).toString().replace(/\/$/, '');
+        const apiKey = request.body.reverse_proxy
+            ? request.body.proxy_password
+            : readSecret(request.user.directories, SECRET_KEYS.CLAUDE, request.body.secret_id);
+
+        if (!apiKey) {
+            console.warn('Claude API key is missing, counting tokens locally.');
+            return countLocally(messages);
+        }
+
+        const result = await fetch(`${apiUrl}/messages/count_tokens`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model: model,
+                messages: [{ role: 'user', content: content }],
+            }),
+        });
+
+        if (!result.ok) {
+            const errorText = await result.text();
+            console.warn(`Claude token counting returned ${result.status} ${result.statusText}, counting locally.\n${errorText}`);
+            return countLocally(messages);
+        }
+
+        /** @type {any} */
+        const data = await result.json();
+        const count = Number(data?.input_tokens);
+
+        if (!Number.isFinite(count)) {
+            console.warn('Claude token counting returned no usable count, counting locally.', data);
+            return countLocally(messages);
+        }
+
+        // Cheap FIFO eviction: entries are a few bytes each and order barely matters.
+        if (remoteClaudeCountCache.size >= REMOTE_CLAUDE_CACHE_LIMIT) {
+            remoteClaudeCountCache.delete(remoteClaudeCountCache.keys().next().value);
+        }
+        remoteClaudeCountCache.set(cacheKey, count);
+
+        return response.send({ 'token_count': count, 'remote': true });
+    } catch (error) {
+        console.warn('Claude token counting failed, counting locally.', error);
+        return countLocally(messages);
     }
 });
 

@@ -1,7 +1,7 @@
 import { localforage } from '../lib.js';
 import { characters, event_types, eventSource, main_api, nai_settings, online_status, this_chid } from '../script.js';
 import { power_user, registerDebugFunction } from './power-user.js';
-import { chat_completion_sources, model_list, oai_settings } from './openai.js';
+import { chat_completion_sources, isClaudeRemoteTokenizerModel, model_list, oai_settings } from './openai.js';
 import { groups, selected_group } from './group-chats.js';
 import { getStringHash } from './utils.js';
 import { kai_flags, kai_settings } from './kai-settings.js';
@@ -741,7 +741,11 @@ export function getTokenizerModel() {
     }
 
     if (oai_settings.chat_completion_source == chat_completion_sources.CLAUDE) {
-        return claudeTokenizer;
+        // The real model ID, not a flat 'claude'. Anthropic changed tokenizers at 4.7,
+        // so counts are no longer interchangeable between Claude models and must not
+        // share a token cache key. The server still maps anything containing 'claude'
+        // back to the local tokenizer, so the local path is unaffected.
+        return oai_settings.claude_model || claudeTokenizer;
     }
 
     if (oai_settings.chat_completion_source == chat_completion_sources.MISTRALAI) {
@@ -806,7 +810,7 @@ export function countTokensOpenAI(messages, full = false) {
     for (const message of messages) {
         const model = getTokenizerModel();
 
-        if (model === 'claude') {
+        if (model.includes('claude')) {
             full = true;
         }
 
@@ -838,47 +842,95 @@ export function countTokensOpenAI(messages, full = false) {
 }
 
 /**
+ * How many count requests may be in flight at once. The local tokenizers answer in
+ * about a millisecond, so this never mattered before; the remote Claude path is a
+ * network round trip per message, and counting a long chat one at a time stalls for
+ * a minute-plus. 8 empties a cold chat in seconds and stays far below Anthropic's
+ * count_tokens rate limit.
+ */
+const TOKEN_COUNT_CONCURRENCY = 8;
+
+/**
+ * Requests the token count for a single message.
+ * @param {object} message Message to count.
+ * @param {string} model Tokenizer model ID.
+ * @param {boolean} useRemoteClaude Count against Anthropic's API instead of a local tokenizer.
+ * @returns {Promise<number>} Token count.
+ */
+async function requestMessageTokenCount(message, model, useRemoteClaude) {
+    if (useRemoteClaude) {
+        const data = await jQuery.ajax({
+            type: 'POST',
+            url: '/api/tokenizers/remote/claude/count',
+            data: JSON.stringify({
+                model: model,
+                messages: [message],
+                reverse_proxy: oai_settings.reverse_proxy,
+                proxy_password: oai_settings.proxy_password,
+            }),
+            dataType: 'json',
+            contentType: 'application/json',
+        });
+
+        return Number(data.token_count);
+    }
+
+    const data = await jQuery.ajax({
+        type: 'POST',
+        url: `/api/tokenizers/openai/count?model=${encodeURIComponent(model)}`,
+        data: JSON.stringify([message]),
+        dataType: 'json',
+        contentType: 'application/json',
+    });
+
+    return Number(data.token_count);
+}
+
+/**
  * Returns the token count for a message using the OpenAI tokenizer.
  * @param {object[]|object} messages
  * @param {boolean} full
  * @returns {Promise<number>} Token count.
  */
 export async function countTokensOpenAIAsync(messages, full = false) {
-    const tokenizerEndpoint = `/api/tokenizers/openai/count?model=${getTokenizerModel()}`;
+    const model = getTokenizerModel();
+    const useRemoteClaude = isClaudeRemoteTokenizerModel();
     const cacheObject = getTokenCacheObject();
 
     if (!Array.isArray(messages)) {
         messages = [messages];
     }
 
+    if (model.includes('claude')) {
+        full = true;
+    }
+
+    const cacheKeys = messages.map(message => `${model}-${getStringHash(JSON.stringify(message))}`);
+
+    // Only unique cache misses get requested. A prompt repeats identical fragments
+    // constantly, and on the remote path every one of them is a live API call.
+    const misses = new Map();
+    cacheKeys.forEach((cacheKey, i) => {
+        if (typeof cacheObject[cacheKey] !== 'number' && !misses.has(cacheKey)) {
+            misses.set(cacheKey, messages[i]);
+        }
+    });
+
+    const pending = Array.from(misses.entries());
+    for (let i = 0; i < pending.length; i += TOKEN_COUNT_CONCURRENCY) {
+        const batch = pending.slice(i, i + TOKEN_COUNT_CONCURRENCY);
+        await Promise.all(batch.map(async ([cacheKey, message]) => {
+            const count = await requestMessageTokenCount(message, model, useRemoteClaude);
+            if (Number.isFinite(count)) {
+                cacheObject[cacheKey] = count;
+            }
+        }));
+    }
+
     let token_count = -1;
 
-    for (const message of messages) {
-        const model = getTokenizerModel();
-
-        if (model === 'claude') {
-            full = true;
-        }
-
-        const hash = getStringHash(JSON.stringify(message));
-        const cacheKey = `${model}-${hash}`;
-        const cachedCount = cacheObject[cacheKey];
-
-        if (typeof cachedCount === 'number') {
-            token_count += cachedCount;
-        } else {
-            const data = await jQuery.ajax({
-                async: true,
-                type: 'POST', //
-                url: tokenizerEndpoint,
-                data: JSON.stringify([message]),
-                dataType: 'json',
-                contentType: 'application/json',
-            });
-
-            token_count += Number(data.token_count);
-            cacheObject[cacheKey] = Number(data.token_count);
-        }
+    for (const cacheKey of cacheKeys) {
+        token_count += Number(cacheObject[cacheKey]) || 0;
     }
 
     if (!full) token_count -= 2;

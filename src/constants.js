@@ -586,9 +586,9 @@ const CLAUDE_DEFAULT_CAPABILITIES = {
  */
 export const CLAUDE_MODEL_CAPABILITIES = [
     {
-        // Fable 5 / Mythos 5: adaptive thinking is unconditional. Both
+        // Fable 5: adaptive thinking is unconditional. Both
         // `thinking: {type:'disabled'}` and manual budget_tokens return 400.
-        pattern: /^claude-(fable|mythos)-5/,
+        pattern: /^claude-(fable)-5/,
         caps: {
             thinkingMode: 'adaptive',
             thinkingDefaultOn: true,
@@ -762,7 +762,7 @@ export function resolveClaudeEffort(tier, caps) {
  * @type {{ pattern: RegExp, input: number, output: number, until?: string, then?: { input: number, output: number } }[]}
  */
 export const CLAUDE_MODEL_PRICING = [
-    { pattern: /^claude-(fable|mythos)-5/, input: 10, output: 50 },
+    { pattern: /^claude-(fable)-5/, input: 10, output: 50 },
     { pattern: /^claude-opus-5/, input: 5, output: 25 },
     // Sonnet 5 launched on introductory pricing that reverts on 2026-09-01.
     { pattern: /^claude-sonnet-5/, input: 2, output: 10, until: '2026-09-01', then: { input: 3, output: 15 } },

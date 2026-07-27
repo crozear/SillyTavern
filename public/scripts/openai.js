@@ -301,6 +301,26 @@ export const service_tier_types = {
 const CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/;
 
 /**
+ * Models on Anthropic's newer tokenizer (4.7 and later, plus Fable). The bundled
+ * src/tokenizers/claude.json is the *old* tokenizer, so it reads roughly 30% low on
+ * these — which is why they get counted against the live count_tokens endpoint
+ * instead. 4.6 and earlier still match the local tokenizer and stay local.
+ * Keep in sync with CLAUDE_NEW_TOKENIZER_MODELS in src/endpoints/tokenizers.js.
+ */
+const CLAUDE_NEW_TOKENIZER_MODELS = /^claude-(?:fable|[a-z]+-(?:[5-9](?:$|[-.])|4-[7-9]))/;
+
+/**
+ * Whether the selected model tokenizes differently from the bundled Claude tokenizer,
+ * meaning token counts have to come from the API to be worth anything.
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {boolean}
+ */
+export function isClaudeRemoteTokenizerModel(settings = oai_settings) {
+    return settings.chat_completion_source === chat_completion_sources.CLAUDE
+        && CLAUDE_NEW_TOKENIZER_MODELS.test(String(settings.claude_model ?? ''));
+}
+
+/**
  * The subset of CLAUDE_MODEL_CAPABILITIES the UI needs, matched most-specific-first.
  * The frontend can't import from src/, and the server stays authoritative for what
  * actually goes on the wire — this table only drives sliders and control states.
@@ -312,7 +332,7 @@ const CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/;
  * @type {{ pattern: RegExp, caps: { contextWindow?: number, maxOutput?: number, adaptiveThinking?: boolean, thinkingToggle?: boolean, highResImages?: boolean, inputPrice?: number } }[]}
  */
 const CLAUDE_UI_CAPABILITIES = [
-    { pattern: /^claude-(fable|mythos)-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.00001 } },
+    { pattern: /^claude-(fable)-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.00001 } },
     { pattern: /^claude-opus-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, thinkingToggle: true, highResImages: true, inputPrice: 0.000005 } },
     { pattern: /^claude-sonnet-5/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, thinkingToggle: true, highResImages: true, inputPrice: 0.000002 } },
     { pattern: /^claude-opus-4-(7|8)/, caps: { contextWindow: 1000000, maxOutput: 128000, adaptiveThinking: true, highResImages: true, inputPrice: 0.000005 } },

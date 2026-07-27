@@ -3511,7 +3511,7 @@ function formatClaudeCost(amount) {
  * @param {string} model Model that served the request
  * @param {object} usage Anthropic `usage` object
  * @param {boolean} batch Whether this was a batch generation
- * @returns {{ input: number, output: number, total: number }|null} USD amounts, or null for an unpriced model
+ * @returns {{ input: number, output: number, cacheRead: number, cacheWrite: number, total: number }|null} USD amounts, or null for an unpriced model
  */
 function computeClaudeCost(model, usage, batch) {
     const pricing = getClaudePricing(model);
@@ -3538,7 +3538,7 @@ function computeClaudeCost(model, usage, batch) {
         ? ((wrote5m || 0) * 1.25 + (wrote1h || 0) * 2) * inputRate
         : (Number(u.cache_creation_input_tokens) || 0) * inputRate * 1.25;
 
-    return { input, output, total: input + output + cacheRead + cacheWrite };
+    return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
 /**
@@ -3554,10 +3554,14 @@ function formatClaudeUsageMeta(model, usage, extras = {}, { batch = false } = {}
     const u = usage ?? {};
     // Unknown model: print the token counts and skip the cost rather than "NaN$".
     const cost = computeClaudeCost(model, u, batch);
-    const inCost = cost ? ` (${formatClaudeCost(cost.input)})` : '';
-    const outCost = cost ? ` (${formatClaudeCost(cost.output)})` : '';
+    /** @param {number|undefined} amount */
+    const price = amount => typeof amount === 'number' ? ` (${formatClaudeCost(amount)})` : '';
+    const inCost = price(cost?.input);
+    const outCost = price(cost?.output);
+    const readCost = price(cost?.cacheRead);
+    const writeCost = price(cost?.cacheWrite);
     const totalCost = cost ? ` | total cost: ${formatClaudeCost(cost.total)}` : '';
-    let meta = `model: ${model} | in: ${u.input_tokens ?? '?'}${inCost} | out: ${u.output_tokens ?? '?'}${outCost}${totalCost} | cache_read: ${u.cache_read_input_tokens ?? 0} | cache_created: ${u.cache_creation_input_tokens ?? 0}`;
+    let meta = `model: ${model} | in: ${u.input_tokens ?? '?'}${inCost} | out: ${u.output_tokens ?? '?'}${outCost} | cache_read: ${u.cache_read_input_tokens ?? 0}${readCost} | cache_created: ${u.cache_creation_input_tokens ?? 0}${writeCost}${totalCost}`;
     for (const [key, value] of Object.entries(extras)) {
         if (value) meta += ` | ${key}: ${value}`;
     }

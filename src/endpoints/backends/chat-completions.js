@@ -3502,7 +3502,7 @@ function formatClaudeBatchElapsed(since) {
 
 // "0.018$", "0.01$" — trailing zeros trimmed so the line stays scannable.
 function formatClaudeCost(amount) {
-    return `${Number(amount.toFixed(6))}$`;
+    return `${Number(amount.toFixed(4))}$`;
 }
 
 /**

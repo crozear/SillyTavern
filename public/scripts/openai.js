@@ -631,6 +631,7 @@ export const settingsToUpdate = {
     claude_enable_caching: ['#claude_enable_caching', 'claude_enable_caching', true, false],
     claude_enable_caching_at_depth: ['#claude_enable_caching_at_depth', 'claude_enable_caching_at_depth', true, false],
     claude_extendedTTL: ['#claude_extendedTTL', 'claude_extendedTTL', true, false],
+    claude_manual_breakpoints_only: ['#claude_manual_breakpoints_only', 'claude_manual_breakpoints_only', true, false],
     vertexai_auth_mode: ['#vertexai_auth_mode', 'vertexai_auth_mode', false, true],
     vertexai_region: ['#vertexai_region', 'vertexai_region', false, true],
     vertexai_express_project_id: ['#vertexai_express_project_id', 'vertexai_express_project_id', false, true],
@@ -754,6 +755,7 @@ export const default_settings = {
     claude_enable_caching: false,
     claude_enable_caching_at_depth: false,
     claude_extendedTTL: false,
+    claude_manual_breakpoints_only: false,
     vertexai_auth_mode: 'express',
     vertexai_region: 'us-central1',
     vertexai_express_project_id: '',
@@ -997,6 +999,9 @@ function setupChatCompletionPromptManager(openAiSettings) {
     };
 
     promptManager.saveServiceSettings = () => {
+        // Adding or clearing a breakpoint saves through here, and it decides whether the
+        // manual-breakpoints-only toggle is usable.
+        updateClaudeCachingControls();
         saveSettingsDebounced();
         return new Promise((resolve) => eventSource.once(event_types.SETTINGS_UPDATED, resolve));
     };
@@ -3284,6 +3289,8 @@ export async function createGenerationParameters(settings, model, type, messages
         generate_data.claude_enable_caching = settings.claude_enable_caching;
         generate_data.claude_enable_caching_at_depth = settings.claude_enable_caching_at_depth;
         generate_data.claude_extendedTTL = settings.claude_extendedTTL;
+        // Only meaningful next to the manual breakpoints themselves, which are Claude-only.
+        generate_data.claude_manual_breakpoints_only = settings.claude_manual_breakpoints_only;
         generate_data.claude_task_budget_enabled = settings.claude_task_budget_enabled;
         generate_data.claude_task_budget_total = Number(settings.claude_task_budget_total);
         generate_data.stop = getCustomStoppingStrings(); // Claude shouldn't have limits on stop strings.
@@ -4985,8 +4992,7 @@ function loadOpenAISettings(data, settings) {
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
     $('#word_replacement_enabled').prop('checked', oai_settings.word_replacement_enabled);
-    $('#claude_extendedTTL_block').toggle(oai_settings.claude_enable_caching);
-    $('#claude_enable_caching_at_depth_block').toggle(oai_settings.claude_enable_caching);
+    updateClaudeCachingControls();
     $('#claude_task_budget_total_block').toggle(oai_settings.claude_task_budget_enabled);
 
     // Don't display Service Account JSON in textarea - it's stored in backend secrets
@@ -6785,6 +6791,10 @@ function toggleChatCompletionForms() {
         $(this).toggle(mode !== 'except' ? matchesSource : !matchesSource);
     });
 
+    // The sweep above judges the caching sub-blocks by source alone, which would show them
+    // with the master switch off. Re-apply the settings-driven visibility on top.
+    updateClaudeCachingControls();
+
     // Show/hide developer role options based on source (OpenAI-compatible sources support developer role)
     const developerRoleSources = [
         chat_completion_sources.OPENAI,
@@ -7103,6 +7113,50 @@ function getEffectiveToolReasoningMode(settings = oai_settings) {
  */
 export function isCacheBreakpointSupported(settings = oai_settings) {
     return settings.chat_completion_source === chat_completion_sources.CLAUDE;
+}
+
+/**
+ * Check whether the prompt list carries at least one manual cache breakpoint.
+ * "Manual breakpoints only" has nothing to keep without one, so the toggle greys out.
+ * @returns {boolean} True if a manual cache breakpoint is set on some prompt
+ */
+function hasManualCacheBreakpoints() {
+    if (!promptManager) {
+        return false;
+    }
+
+    // Only prompts enabled for the active character reach the request, but there is no
+    // order to read before a character is loaded — fall back to the whole preset there
+    // instead of greying out a toggle whose breakpoints do exist.
+    const enabledPrompts = promptManager.getPromptsForCharacter(promptManager.activeCharacter, true);
+    const prompts = enabledPrompts.length ? enabledPrompts : (promptManager.serviceSettings?.prompts ?? []);
+
+    return prompts.some(prompt => prompt
+        && promptManager.isCacheBreakpointAllowed(prompt)
+        && normalizeCacheBreakpoint(prompt.cache_breakpoint) !== CACHE_BREAKPOINT_POSITION.NONE);
+}
+
+/**
+ * Sync the Claude prompt caching sub-options with the master switch: they are all
+ * meaningless while caching is off, and manual-breakpoint-only mode additionally needs
+ * a breakpoint to act on.
+ */
+function updateClaudeCachingControls() {
+    const cachingEnabled = Boolean(oai_settings.claude_enable_caching);
+    // Each block carries its own data-source list (manual breakpoints are Claude-only),
+    // so read it back rather than restating it here and re-showing an option on a source
+    // that has no use for it.
+    $('#claude_enable_caching_at_depth_block, #claude_extendedTTL_block, #claude_manual_breakpoints_only_block').each(function () {
+        const sources = String($(this).data('source') ?? '').split(',');
+        $(this).toggle(cachingEnabled && sources.includes(oai_settings.chat_completion_source));
+    });
+
+    // Left checked when disabled: the setting is remembered, and the server falls back to
+    // automatic caching for as long as there is no breakpoint, which the title spells out.
+    const breakpointsSet = hasManualCacheBreakpoints();
+    $('#claude_manual_breakpoints_only')
+        .prop('disabled', !breakpointsSet)
+        .attr('title', breakpointsSet ? null : t`No cache breakpoints are set, so automatic caching applies. Set one on a prompt to use this.`);
 }
 
 /**
@@ -7566,14 +7620,15 @@ export function initOpenAI() {
 
     $('#claude_enable_caching').on('change', function () {
         oai_settings.claude_enable_caching = !!$('#claude_enable_caching').prop('checked');
-        $('#claude_extendedTTL_block').toggle(oai_settings.claude_enable_caching);
-        $('#claude_enable_caching_at_depth_block').toggle(oai_settings.claude_enable_caching);
         if (!oai_settings.claude_enable_caching) {
             oai_settings.claude_extendedTTL = false;
             $('#claude_extendedTTL').prop('checked', false);
             oai_settings.claude_enable_caching_at_depth = false;
             $('#claude_enable_caching_at_depth').prop('checked', false);
+            oai_settings.claude_manual_breakpoints_only = false;
+            $('#claude_manual_breakpoints_only').prop('checked', false);
         }
+        updateClaudeCachingControls();
         saveSettingsDebounced();
     });
 
@@ -7584,6 +7639,11 @@ export function initOpenAI() {
 
     $('#claude_extendedTTL').on('change', function () {
         oai_settings.claude_extendedTTL = !!$('#claude_extendedTTL').prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#claude_manual_breakpoints_only').on('change', function () {
+        oai_settings.claude_manual_breakpoints_only = !!$('#claude_manual_breakpoints_only').prop('checked');
         saveSettingsDebounced();
     });
 

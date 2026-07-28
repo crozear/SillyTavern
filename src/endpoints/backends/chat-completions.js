@@ -1675,8 +1675,10 @@ async function sendClaudeRequest(request, response) {
                 return response.send({ error: { message: stopNotice } });
             }
 
-            // Wrap it back to OAI format + save the original content
-            const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
+            // Wrap it back to OAI format + save the original content. `usage` rides along
+            // for the token counter: `output_tokens_details.thinking_tokens` is the real
+            // thinking cost, which the summarized reasoning text can't be tokenized into.
+            const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content, usage: generateResponseJson.usage };
             return sendWithWordReplacements(response, reply, wordReplacementsEnabled);
         }
     } catch (error) {

@@ -103,6 +103,12 @@ declare global {
         token_count?: number;
         /** Share of `token_count` spent on reasoning. Absent if the message didn't reason. */
         reasoning_token_count?: number;
+        /**
+         * Reasoning tokens as reported by the provider (Anthropic's `thinking_tokens`, the
+         * Responses API's `reasoning_tokens`). The real cost, unlike the summarized reasoning
+         * text — kept so recounts that have no API response to read can reuse it.
+         */
+        reported_reasoning_tokens?: number;
         /** When false, the message cannot be swiped. */
         swipeable?: boolean;
         overswipe_behavior?: OVERSWIPE_BEHAVIOR;

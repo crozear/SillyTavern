@@ -2740,28 +2740,58 @@ export function formatGenerationTimer(gen_started, gen_finished, tokenCount, rea
  * Computes and stores a message's token counts: the total, plus the share of it that
  * was spent thinking.
  *
- * Providers report one merged output token count — no API breaks it down into
- * thinking vs. reply — so the split is derived. The reply half is tokenized from the
- * text directly, since that string is exactly what was produced; the thinking half is
- * the remainder, which absorbs both tokenizer drift and the gap between hidden
- * thinking and the summary of it that some models return. The two therefore always
- * add up to the reported total.
+ * The reasoning text on a message is not a usable basis for the thinking half: modern
+ * reasoning models (Claude, OpenAI's o-series) return a *summary* of their thinking, so
+ * tokenizing it undercounts what was actually generated and billed, often by a lot. The
+ * providers do report the real figure (Anthropic as `usage.output_tokens_details.thinking_tokens`),
+ * so a reported count is stashed on `extra.reported_reasoning_tokens` and reused by every
+ * later recount — swipe restore, a text edit, the counter backfill — none of which have
+ * the API response to hand.
+ *
+ * Only when no count was ever reported is the split derived: the reply half is tokenized
+ * from the text (that string is exactly what was produced) and thinking is the remainder,
+ * which absorbs both tokenizer drift and the hidden-vs-summary gap.
  * @param {object} extra Message `extra` object (mutated in place)
  * @param {string} text Message text
  * @param {string} reasoning Reasoning text ('' if the message didn't reason)
- * @param {number?} [reportedTotal=null] Provider-reported output token count, if any
+ * @param {ReportedUsage?} [reportedUsage=null] Provider-reported output token counts, if any
  * @returns {Promise<number>} The stored total
+ *
+ * @typedef {object} ReportedUsage
+ * @property {number?} [total] Total output tokens the provider billed (thinking included)
+ * @property {number?} [thinking] Real thinking tokens spent, not the size of their summary
  */
-export async function updateMessageTokenCount(extra, text, reasoning, reportedTotal = null) {
+export async function updateMessageTokenCount(extra, text, reasoning, reportedUsage = null) {
+    /** @type {(x: any) => number?} */
+    const asCount = x => (Number.isFinite(x) && x >= 0 ? Number(x) : null);
+
+    const reportedThinking = asCount(reportedUsage?.thinking);
+    if (reportedThinking !== null) {
+        extra.reported_reasoning_tokens = reportedThinking;
+    }
+
+    const reportedTotal = asCount(reportedUsage?.total);
+    const thinkingTokens = asCount(extra.reported_reasoning_tokens);
     const replyTokens = await getTokenCountAsync(text || '', 0);
-    const total = Number.isFinite(reportedTotal) && reportedTotal > 0
-        ? reportedTotal
-        : replyTokens + (reasoning ? await getTokenCountAsync(reasoning, 0) : 0);
+
+    let total;
+    if (reportedTotal) {
+        total = reportedTotal;
+    } else if (thinkingTokens !== null) {
+        // A recount with no response to read: the reported thinking count still holds,
+        // only the reply half is worth tokenizing again.
+        total = replyTokens + thinkingTokens;
+    } else {
+        total = replyTokens + (reasoning ? await getTokenCountAsync(reasoning, 0) : 0);
+    }
 
     extra.token_count = total;
 
-    if (reasoning) {
-        extra.reasoning_token_count = Math.max(0, total - replyTokens);
+    const derivedThinking = reasoning ? Math.max(0, total - replyTokens) : 0;
+    const thinking = thinkingTokens !== null ? Math.min(thinkingTokens, total) : derivedThinking;
+
+    if (thinking > 0) {
+        extra.reasoning_token_count = thinking;
     } else {
         delete extra.reasoning_token_count;
     }
@@ -2776,7 +2806,7 @@ export async function updateMessageTokenCount(extra, text, reasoning, reportedTo
  * @returns {{counterValue: string, counterTitle: string}} Counter text and its tooltip
  * @example
  * const { counterValue } = formatTokenCounter({ token_count: 1198, reasoning_token_count: 812 });
- * console.log(counterValue); // 812t + 386t
+ * console.log(counterValue); // T:812\nR:386 — two lines, so the counter stays narrow
  */
 export function formatTokenCounter(extra) {
     const total = extra?.token_count;
@@ -3626,6 +3656,8 @@ class StreamingProcessor {
         this.reasoningSignature = null;
         /** @type {number?} */
         this.outputTokens = null;
+        /** @type {number?} */
+        this.thinkingTokens = null;
     }
 
     /**
@@ -3735,16 +3767,19 @@ class StreamingProcessor {
             await this.reasoningHandler.process(messageId, mesChanged, this.promptReasoning);
             processedText = chat[messageId].mes;
 
-            // Token count update.
-            // For Claude, use output_tokens from the API (covers actual thinking tokens, not just the summary).
-            // For other providers, fall back to local tokenization of reasoning + text.
+            // Token count update. Providers that report their own output/thinking counts
+            // (Claude, the Responses API) are authoritative — the visible reasoning is only
+            // a summary. Everyone else falls back to local tokenization of reasoning + text.
+            // A continuation is the exception: the reported counts cover just the appended
+            // part while the counter describes the whole message, so they're not passed and
+            // the original generation's stored thinking count stands.
             let currentTokenCount = 0;
             if (isFinal && power_user.message_token_count_enabled) {
                 currentTokenCount = await updateMessageTokenCount(
                     chat[messageId].extra,
                     processedText,
                     this.reasoningHandler.reasoning,
-                    this.outputTokens,
+                    isContinue ? null : { total: this.outputTokens, thinking: this.thinkingTokens },
                 );
             }
             if (currentTokenCount) {
@@ -3817,6 +3852,7 @@ class StreamingProcessor {
             const swipeInfoExtra = structuredClone(message.extra ?? {});
             delete swipeInfoExtra.token_count;
             delete swipeInfoExtra.reasoning_token_count;
+            delete swipeInfoExtra.reported_reasoning_tokens;
             delete swipeInfoExtra.reasoning;
             delete swipeInfoExtra.reasoning_duration;
             const swipeInfo = {
@@ -3947,6 +3983,7 @@ class StreamingProcessor {
                 this.images = state?.images ?? [];
                 this.reasoningSignature = state?.signature ?? null;
                 this.outputTokens = state?.outputTokens ?? this.outputTokens;
+                this.thinkingTokens = state?.thinkingTokens ?? this.thinkingTokens;
                 await eventSource.emit(event_types.STREAM_TOKEN_RECEIVED, text);
                 await sw.tick(async () => await this.onProgressStreaming(this.messageId, this.continueMessage + text));
             }
@@ -5606,6 +5643,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         kobold_horde_model = title;
 
         const swipes = extractMultiSwipes(data, type);
+        // A multi-choice response reports usage for every choice it generated, which says
+        // nothing about the single message being saved — that one gets counted locally.
+        const reportedUsage = swipes.length > 0 ? null : extractReportedUsage(data);
 
         messageChunk = cleanUpMessage({
             getMessage: getMessage,
@@ -5644,8 +5684,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         } else {
             // Without streaming we'll be having a full message on continuation. Treat it as a last chunk.
             if (originalType !== 'continue') {
-                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature }));
+                ({ type, getMessage } = await saveReply({ type, getMessage, title, swipes, reasoning, imageUrls, reasoningSignature, reportedUsage }));
             } else {
+                // The reported counts cover only the appended part, but the counter describes
+                // the whole message, so they're left out and the message is counted locally.
                 ({ type, getMessage } = await saveReply({ type: 'appendFinal', getMessage, title, swipes, reasoning, imageUrls, reasoningSignature }));
             }
 
@@ -6422,6 +6464,33 @@ export function extractMessageFromData(data, activeApi = null) {
 }
 
 /**
+ * Extracts the provider-reported output token counts from a non-streaming response.
+ *
+ * Anthropic and the OpenAI Responses API both report how many of the output tokens went
+ * to thinking. That number is the only accurate one available: what the message carries
+ * is a summary of the thinking, which tokenizes to a fraction of the real cost.
+ * @param {object} data Response data
+ * @returns {ReportedUsage?} Reported counts, or null if the provider didn't send any
+ */
+export function extractReportedUsage(data) {
+    const usage = data?.usage;
+    if (!usage || typeof usage !== 'object') {
+        return null;
+    }
+
+    // Anthropic: output_tokens / output_tokens_details.thinking_tokens
+    // OpenAI Responses: output_tokens / output_tokens_details.reasoning_tokens
+    // OpenAI Chat Completions: completion_tokens / completion_tokens_details.reasoning_tokens
+    const total = usage.output_tokens ?? usage.completion_tokens ?? null;
+    const thinking = usage.output_tokens_details?.thinking_tokens
+        ?? usage.output_tokens_details?.reasoning_tokens
+        ?? usage.completion_tokens_details?.reasoning_tokens
+        ?? null;
+
+    return total === null && thinking === null ? null : { total, thinking };
+}
+
+/**
  * Extracts JSON from the response data.
  * @param {object} data Response data
  * @param {object} [options] Extraction options
@@ -6756,12 +6825,13 @@ async function processImageAttachment(message, { imageUrls }) {
  * @property {string} [reasoning] Message reasoning
  * @property {string[]} [imageUrls] Links to images
  * @property {string?} [reasoningSignature] Encrypted signature of the reasoning text
+ * @property {ReportedUsage?} [reportedUsage] Provider-reported output token counts, if any
  *
  * @typedef {object} SaveReplyResult
  * @property {string} type Type of generation
  * @property {string} getMessage Generated message
  */
-export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null }) {
+export async function saveReply({ type, getMessage, fromStreaming = false, title = '', swipes = [], reasoning = '', imageUrls = [], reasoningSignature = null, reportedUsage = null }) {
     // Backward compatibility
     if (arguments.length > 1 && typeof arguments[0] !== 'object') {
         console.trace('saveReply called with positional arguments. Please use an object instead.');
@@ -6804,9 +6874,13 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.reasoning = reasoning;
             lastMessage.extra.reasoning_duration = null;
             lastMessage.extra.reasoning_signature = reasoningSignature;
+            // This slot may still hold the swipe it replaced. Its reported thinking count
+            // describes a generation that no longer exists, so drop it and let this one
+            // report its own (or fall back to a derived split if it doesn't).
+            delete lastMessage.extra.reported_reasoning_tokens;
             await processImageAttachment(lastMessage, { imageUrls });
             if (power_user.message_token_count_enabled) {
-                await updateMessageTokenCount(lastMessage.extra, lastMessage.mes, reasoning);
+                await updateMessageTokenCount(lastMessage.extra, lastMessage.mes, reasoning, reportedUsage);
             }
             const chat_id = (chat.length - 1);
             !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
@@ -6881,7 +6955,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         newMessage.gen_finished = generationFinished;
 
         if (power_user.message_token_count_enabled) {
-            await updateMessageTokenCount(newMessage.extra, newMessage.mes, reasoning);
+            await updateMessageTokenCount(newMessage.extra, newMessage.mes, reasoning, reportedUsage);
         }
 
         if (selected_group) {
@@ -6932,6 +7006,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         const swipeInfoExtra = structuredClone(item.extra ?? {});
         delete swipeInfoExtra.token_count;
         delete swipeInfoExtra.reasoning_token_count;
+        delete swipeInfoExtra.reported_reasoning_tokens;
         delete swipeInfoExtra.reasoning;
         delete swipeInfoExtra.reasoning_duration;
         const swipeInfo = {

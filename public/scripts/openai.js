@@ -3680,8 +3680,14 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
         if (show_thoughts) {
             state.reasoning += data?.delta?.thinking || '';
         }
-        if (data?.type === 'message_delta' && data?.usage?.output_tokens != null) {
-            state.outputTokens = data.usage.output_tokens;
+        if (data?.type === 'message_delta' && data?.usage) {
+            if (data.usage.output_tokens != null) {
+                state.outputTokens = data.usage.output_tokens;
+            }
+            // The real thinking token count, not the size of the summary Claude shows.
+            if (data.usage.output_tokens_details?.thinking_tokens != null) {
+                state.thinkingTokens = data.usage.output_tokens_details.thinking_tokens;
+            }
         }
         return data?.delta?.text || '';
     } else if ([chat_completion_sources.MAKERSUITE, chat_completion_sources.VERTEXAI].includes(chat_completion_source)) {
@@ -3806,6 +3812,18 @@ export function getStreamingReply(data, state, { chatCompletionSource = null, ov
                     ?.join('\n\n') || '';
                 state.reasoning = reasoningText || summaryText;
             }
+        }
+        // The terminal event carries the usage block. Like Claude, the reasoning shown is
+        // a summary, so the reported reasoning tokens are the only accurate count.
+        if (data.type === 'response.completed' && d.response?.usage) {
+            const usage = d.response.usage;
+            if (usage.output_tokens != null) {
+                state.outputTokens = usage.output_tokens;
+            }
+            if (usage.output_tokens_details?.reasoning_tokens != null) {
+                state.thinkingTokens = usage.output_tokens_details.reasoning_tokens;
+            }
+            return '';
         }
         // All other Responses API events (response.created, response.output_item.added, etc.)
         return '';

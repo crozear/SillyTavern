@@ -223,6 +223,7 @@ async function placeholderFor(job) {
     message.gen_finished = undefined;
     delete message.extra.token_count;
     delete message.extra.reasoning_token_count;
+    delete message.extra.reported_reasoning_tokens;
     refreshTimerAndTokenDom(chat.length - 1, message);
 
     if (job.mode === 'swipe') {
@@ -304,11 +305,12 @@ function refreshAllCancelButtons() {
 }
 
 /**
- * Stores a delivered reply's token counts. Passes the API's own `output_tokens` (the
- * `out:` in the server's usage line) as the total, since it counts the thinking
- * tokens the visible reasoning only summarizes. A continuation is the exception:
- * `output_tokens` covers just the appended part, but the counter describes the whole
- * message, so it falls back to counting locally.
+ * Stores a delivered reply's token counts from the API's own usage block (the same one
+ * behind the server's `out:` usage line): `output_tokens` for the total and
+ * `output_tokens_details.thinking_tokens` for the thinking half, which the visible
+ * reasoning only summarizes. A continuation is the exception: those counts cover just
+ * the appended part, but the counter describes the whole message, so it falls back to
+ * counting locally.
  * @param {BatchJob} job Job being delivered
  * @param {object} extra Message `extra` object (mutated in place)
  * @param {string} text Final message text
@@ -320,8 +322,12 @@ async function countReplyTokens(job, extra, text, reasoning) {
         return 0;
     }
 
-    const reportedTotal = job.mode === 'continue' ? null : job.reply?.usage?.output_tokens;
-    return await updateMessageTokenCount(extra, text, reasoning, reportedTotal);
+    const usage = job.reply?.usage;
+    const reportedUsage = job.mode === 'continue' ? null : {
+        total: usage?.output_tokens,
+        thinking: usage?.output_tokens_details?.thinking_tokens,
+    };
+    return await updateMessageTokenCount(extra, text, reasoning, reportedUsage);
 }
 
 /**

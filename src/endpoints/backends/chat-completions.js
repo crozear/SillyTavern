@@ -3927,8 +3927,35 @@ function convertToResponsesApiRequest(requestBody, originalBody = {}) {
         let firstSystemUsed = false;
         const input = [];
         for (const msg of requestBody.messages) {
+            // Tool results are standalone input items here, not messages with a role
+            if (msg.role === 'tool') {
+                input.push({
+                    type: 'function_call_output',
+                    call_id: msg.tool_call_id,
+                    output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? ''),
+                });
+                continue;
+            }
+
             const cleanMsg = { role: msg.role, content: convertResponsesContent(msg.content) };
             if (msg.name) cleanMsg.name = msg.name;
+
+            // Assistant tool calls become function_call items next to any text the turn had
+            if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+                if (cleanMsg.content?.length) {
+                    input.push(cleanMsg);
+                }
+                for (const call of msg.tool_calls) {
+                    const fn = call?.function ?? {};
+                    input.push({
+                        type: 'function_call',
+                        call_id: call?.id ?? call?.call_id,
+                        name: fn.name ?? call?.name,
+                        arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+                    });
+                }
+                continue;
+            }
 
             if (cleanMsg.role === 'developer' && !firstSystemUsed) {
                 requestBody.instructions = typeof cleanMsg.content === 'string'
@@ -3943,6 +3970,29 @@ function convertToResponsesApiRequest(requestBody, originalBody = {}) {
         }
         requestBody.input = input;
         delete requestBody.messages;
+    }
+
+    // Function tools are flat here: { type, name, ... } instead of { type, function: { name, ... } }.
+    // `strict` defaults to true on this API, which most tool schemas (extra keys, optional
+    // properties) can't satisfy, so opt out unless the tool explicitly asked for it.
+    if (Array.isArray(requestBody.tools)) {
+        requestBody.tools = requestBody.tools
+            .map(tool => {
+                if (tool?.type !== 'function' || !tool.function) return tool;
+                return {
+                    type: 'function',
+                    name: tool.function.name,
+                    description: tool.function.description ?? null,
+                    parameters: tool.function.parameters ?? null,
+                    strict: tool.function.strict ?? false,
+                };
+            })
+            .filter(tool => tool?.type !== 'function' || tool.name);
+    }
+
+    // tool_choice: named function selection is flat here too
+    if (requestBody.tool_choice?.type === 'function' && requestBody.tool_choice.function?.name) {
+        requestBody.tool_choice = { type: 'function', name: requestBody.tool_choice.function.name };
     }
 
     // max_tokens / max_completion_tokens → max_output_tokens

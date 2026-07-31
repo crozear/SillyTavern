@@ -3631,9 +3631,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
                     text += getStreamingReply(parsed, state, { isResponsesApi });
                 }
 
-                if (!isResponsesApi) {
-                    ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
-                }
+                ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
 
                 yield { text, swipes: swipes, logprobs: isResponsesApi ? null : parseChatCompletionLogprobs(parsed), toolCalls: toolCalls, state: state };
             }

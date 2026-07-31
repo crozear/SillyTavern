@@ -469,6 +469,25 @@ export class ToolManager {
                 }
             }
         }
+        // OpenAI Responses API: function_call items arrive complete, no delta accumulation needed
+        if (parsed?.type === 'response.output_item.done' && parsed?.item?.type === 'function_call') {
+            const choiceIndex = 0;
+            const item = parsed.item;
+            const id = item.call_id || item.id;
+
+            if (!Array.isArray(toolCalls[choiceIndex])) {
+                toolCalls[choiceIndex] = [];
+            }
+
+            const toolCall = { id: id, type: 'function', function: { name: item.name ?? '', arguments: item.arguments ?? '' } };
+            const existingIndex = toolCalls[choiceIndex].findIndex(c => c?.id === id);
+
+            if (existingIndex >= 0) {
+                toolCalls[choiceIndex][existingIndex] = toolCall;
+            } else {
+                toolCalls[choiceIndex].push(toolCall);
+            }
+        }
         const cohereToolEvents = ['message-start', 'tool-call-start', 'tool-call-delta', 'tool-call-end'];
         if (cohereToolEvents.includes(parsed?.type) && typeof parsed?.delta?.message === 'object') {
             const choiceIndex = 0;
@@ -719,6 +738,19 @@ export class ToolManager {
         // Google AI Studio tool calls
         if (Array.isArray(data?.responseContent?.parts)) {
             return data.responseContent.parts.filter(p => p.functionCall).map(p => convertGoogleToolCall(p.functionCall, p.thoughtSignature));
+        }
+
+        // OpenAI Responses API tool calls
+        if (Array.isArray(data?.output)) {
+            const functionCalls = data.output.filter(item => item?.type === 'function_call');
+
+            if (functionCalls.length) {
+                return functionCalls.map(item => ({
+                    id: item.call_id || item.id,
+                    type: 'function',
+                    function: { name: item.name, arguments: item.arguments },
+                }));
+            }
         }
 
         // Parsed tool calls from non-streaming data

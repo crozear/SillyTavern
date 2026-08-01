@@ -8,6 +8,7 @@ import {
     formatTokenCounter,
     getCurrentChatId,
     getRequestHeaders,
+    main_api,
     name2,
     saveChatConditional,
     saveReply,
@@ -15,7 +16,7 @@ import {
     updateMessageTokenCount,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
-import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
+import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, hasClaudeBatchApiKey, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
@@ -187,6 +188,164 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
 
     toastr.info(t`Reply will arrive here when it's done — cancel it from the message, or keep using other chats meanwhile.`, t`Batch queued`, { timeOut: 8000 });
     return 'queued';
+}
+
+/**
+ * Why an explicit `batch=true` generation can't run, if it can't. A chat generation
+ * is batched because of the model it picked; this one is an opt-in on a single
+ * command, so a refusal has to name what's missing instead of quietly sending the
+ * request at full price. The group-chat and impersonate blockers don't apply here —
+ * nothing is delivered into a chat, the caller just awaits the text.
+ * @returns {string|null} Human-readable reason, or null when the batch can go ahead
+ */
+export function getClaudeBatchOnDemandBlocker() {
+    if (main_api !== 'openai') {
+        return t`batch=true needs the Chat Completion API.`;
+    }
+
+    if (!isClaudeBatchModeOn()) {
+        return t`batch=true needs a batch-enabled Claude model selected (and claude.batchFlex enabled on the server).`;
+    }
+
+    if (!hasClaudeBatchApiKey()) {
+        return t`batch=true needs an sk-ant API key as the proxy password — subscription auth is billed at full price and gets no batch discount.`;
+    }
+
+    return null;
+}
+
+/**
+ * Delay between polls that the stop button can cut short. `delay()` can't be
+ * interrupted, and an awaited batch shouldn't sit out a full poll interval after
+ * the user has already cancelled.
+ * @param {number} ms Milliseconds to wait
+ * @param {AbortSignal} [signal] Abort signal
+ * @returns {Promise<void>}
+ */
+function interruptibleDelay(ms, signal) {
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+        };
+        const onAbort = () => {
+            cleanup();
+            reject(new Error('Batch generation was aborted.'));
+        };
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, ms);
+
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+/**
+ * Best-effort cancel of a batch nothing is waiting on any more. Anthropic drops
+ * requests that haven't started yet; the endpoint drops the persisted job whatever
+ * the answer, so this doubles as the acknowledgement.
+ * @param {{ jobId: string, batchId: string }} job Job to abandon
+ * @returns {Promise<void>}
+ */
+async function abandonBatch(job) {
+    try {
+        await postBatch('cancel', { jobId: job.jobId, batchId: job.batchId });
+    } catch (error) {
+        console.error('Failed to cancel abandoned Claude batch.', error);
+    }
+}
+
+/**
+ * Runs one generation through the Message Batches API and waits for it instead of
+ * detaching it into the chat. This is the `/gen batch=true` path: the caller is a
+ * slash command that awaits a string, so there's no message to park a placeholder
+ * in and nothing to deliver later — the reply *is* the return value.
+ * @param {object} generateData Fully built generation parameters, as sendOpenAIRequest assembles them
+ * @param {AbortSignal} [signal] Abort signal — cancels the batch and rejects
+ * @returns {Promise<object>} Reply payload in the same shape the synchronous Claude path returns
+ * @throws {Error} If the batch can't be submitted, fails, is refused, or outlives the wait window
+ */
+export async function requestClaudeBatchReply(generateData, signal = null) {
+    const blocker = getClaudeBatchOnDemandBlocker();
+    if (blocker) {
+        throw new Error(blocker);
+    }
+
+    if (signal?.aborted) {
+        throw new Error('Batch generation was aborted.');
+    }
+
+    let response;
+    try {
+        // `batch_mode` marks the job as awaited: it has no home in any chat, so a
+        // reload must drop it rather than resume it into whatever chat is open.
+        response = await fetch(`${API_BASE}/submit`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ ...generateData, stream: false, batch_mode: 'slash' }),
+        });
+    } catch (error) {
+        console.error('Claude batch submit failed.', error);
+        throw new Error('Couldn\'t reach the batch endpoint. Nothing was sent.');
+    }
+
+    if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        console.error('Claude batch submit error.', response.status, detail);
+        throw new Error(detail?.reason || 'Batch submission failed. Nothing was sent.');
+    }
+
+    const job = await response.json();
+    applyServerSettings(job);
+    console.info(`Awaiting Claude batch ${job.batchId} (job ${job.jobId}).`);
+    toastr.info(t`Waiting for the batched reply — this can take several minutes.`, t`Batch Processing`, { timeOut: 10000 });
+
+    const deadline = Date.now() + maxWaitMinutes * 60 * 1000;
+    try {
+        while (true) {
+            await interruptibleDelay(pollIntervalMs, signal);
+
+            if (Date.now() > deadline) {
+                throw new Error(`Batch didn't finish within ${maxWaitMinutes} minutes. Nothing was returned.`);
+            }
+
+            // A blip on a poll isn't a failed generation: keep asking until the
+            // deadline rather than throwing away a batch that's still cooking.
+            const statusResponse = await postBatch('status', { jobId: job.jobId, batchId: job.batchId });
+            if (!statusResponse.ok) {
+                console.warn('Claude batch status check failed.', statusResponse.status);
+                continue;
+            }
+
+            const status = await statusResponse.json();
+            if (status?.processing_status !== 'ended') {
+                continue;
+            }
+
+            const resultResponse = await postBatch('result', { jobId: job.jobId, batchId: job.batchId, customId: job.customId });
+            if (!resultResponse.ok) {
+                console.warn('Claude batch result fetch failed.', resultResponse.status);
+                continue;
+            }
+
+            const result = await resultResponse.json();
+            if (result?.resultType !== 'succeeded' || !result?.reply) {
+                // A refusal carries a reason worth showing verbatim (stop_details.category).
+                throw new Error(result?.error?.message || `Batch ${result?.resultType ?? 'failed'}: no reply was produced.`);
+            }
+
+            await ackJob(job.jobId);
+            return result.reply;
+        }
+    } catch (error) {
+        await abandonBatch(job);
+        throw error;
+    }
 }
 
 /**
@@ -730,6 +889,16 @@ export async function initClaudeBatchTracker() {
         applyServerSettings(data);
 
         for (const stored of data?.jobs ?? []) {
+            // An awaited batch (`/gen batch=true`) belonged to a slash command that
+            // died with the page. There's nothing left to hand the reply to, and it
+            // was never headed for a chat, so drop it instead of resuming it.
+            if (stored.mode === 'slash') {
+                console.warn(`Dropping awaited Claude batch job ${stored.jobId} — whatever was waiting on it is gone.`);
+                await abandonBatch(stored);
+                toastr.warning(t`A batched slash command was still waiting when the page reloaded — it's been dropped.`, t`Batch Processing`, { timeOut: 12000 });
+                continue;
+            }
+
             if (stored.status === 'ready' && stored.resultReply) {
                 // Finished while ST was down — deliver as soon as we can.
                 const job = { ...stored, reply: stored.resultReply };

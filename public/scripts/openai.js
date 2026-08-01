@@ -85,6 +85,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { extension_settings } from './extensions.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE, GEMINI_SAFETY } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
+import { requestClaudeBatchReply } from './claude-batch.js';
 
 export {
     openai_messages_count,
@@ -508,6 +509,17 @@ export function isClaudeBatchModeOn(settings = oai_settings) {
 }
 
 /**
+ * Whether the settings carry a key the Message Batches API can actually use. The
+ * 50% discount only exists for a real `sk-ant` key — subscription auth is billed at
+ * full price — so every batch path gates on this and words its own refusal.
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {boolean}
+ */
+export function hasClaudeBatchApiKey(settings = oai_settings) {
+    return typeof settings.proxy_password === 'string' && settings.proxy_password.includes('sk-ant');
+}
+
+/**
  * Why the current request can't be batched, if it can't. Returning a reason means
  * the generation is refused — never quietly downgraded to a paid sync request.
  * Since the model *is* the switch, the way out of every one of these is to pick a
@@ -519,7 +531,7 @@ export function isClaudeBatchModeOn(settings = oai_settings) {
  * @returns {string|null} Human-readable reason, or null when batching is fine
  */
 export function getClaudeBatchBlocker(type, settings = oai_settings) {
-    if (typeof settings.proxy_password !== 'string' || !settings.proxy_password.includes('sk-ant')) {
+    if (!hasClaudeBatchApiKey(settings)) {
         return 'This model is batch-only, and the Message Batches API needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount — set a key, or switch model.';
     }
 
@@ -1735,6 +1747,7 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
  * @param {string} options.worldInfoAfter - The world info to be added after the main conversation.
  * @param {string} options.charDescription - Description of the character.
  * @param {string} options.quietPrompt - The quiet prompt to be used in the conversation.
+ * @param {string} [options.quietRole] - Role to send the quiet prompt as. Defaults to system.
  * @param {string} options.bias - The bias to be added in the conversation.
  * @param {Object} options.extensionPrompts - An object containing additional prompts.
  * @param {string} options.systemPromptOverride - Character card override of the main prompt
@@ -1742,7 +1755,7 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
  * @param {string} options.type - The type of generation that triggered the prompt
  * @returns {Promise<Object>} prompts - The prepared and merged system and user-defined prompts.
  */
-async function preparePromptsForChatCompletion({ scenario, charPersonality, name2, worldInfoBefore, worldInfoAfter, charDescription, quietPrompt, bias, extensionPrompts, systemPromptOverride, jailbreakPromptOverride, type }) {
+async function preparePromptsForChatCompletion({ scenario, charPersonality, name2, worldInfoBefore, worldInfoAfter, charDescription, quietPrompt, quietRole, bias, extensionPrompts, systemPromptOverride, jailbreakPromptOverride, type }) {
     const scenarioText = scenario && oai_settings.scenario_format ? substituteParams(oai_settings.scenario_format) : (scenario || '');
     const charPersonalityText = charPersonality && oai_settings.personality_format ? substituteParams(oai_settings.personality_format) : (charPersonality || '');
     const groupNudge = substituteParams(oai_settings.group_nudge_prompt);
@@ -1758,7 +1771,9 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
         { role: 'system', content: scenarioText, identifier: 'scenario' },
         // Unordered prompts without marker
         { role: 'system', content: impersonationPrompt, identifier: 'impersonate' },
-        { role: 'system', content: quietPrompt, identifier: 'quietPrompt' },
+        // System unless the caller asked otherwise (`/gen role=user`). The prompt
+        // manager has no entry for this identifier, so nothing overrides it later.
+        { role: quietRole || 'system', content: quietPrompt, identifier: 'quietPrompt' },
         { role: 'system', content: groupNudge, identifier: 'groupNudge' },
         { role: 'assistant', content: bias, identifier: 'bias' },
     ];
@@ -1911,6 +1926,7 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
  * @param {string} content.bias - The bias to be added in the conversation.
  * @param {string} content.type - The type of the chat, can be 'impersonate'.
  * @param {string} content.quietPrompt - The quiet prompt to be used in the conversation.
+ * @param {string} [content.quietRole] - Role to send the quiet prompt as. Defaults to system.
  * @param {string} content.quietImage - Image prompt for extras
  * @param {string} content.cyclePrompt - The last prompt used for chat message continuation.
  * @param {string} content.systemPromptOverride - The system prompt override.
@@ -1931,6 +1947,7 @@ export async function prepareOpenAIMessages({
     bias,
     type,
     quietPrompt,
+    quietRole,
     quietImage,
     extensionPrompts,
     cyclePrompt,
@@ -1958,6 +1975,7 @@ export async function prepareOpenAIMessages({
             worldInfoAfter,
             charDescription,
             quietPrompt,
+            quietRole,
             bias,
             extensionPrompts,
             systemPromptOverride,
@@ -3569,7 +3587,7 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } = {}) {
+async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, batch = false } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
@@ -3578,6 +3596,13 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
     const model = getChatCompletionModel(oai_settings);
     const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema });
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
+
+    // An on-demand batch (`/gen batch=true`) goes through the Message Batches API but
+    // is awaited rather than detached: the caller wants the string back. Same request
+    // body, same settings event — only the transport differs.
+    if (batch) {
+        return await requestClaudeBatchReply(generate_data, signal);
+    }
 
     const generate_url = '/api/backends/chat-completions/generate';
     const response = await fetch(generate_url, {
@@ -7560,7 +7585,71 @@ function updateFeatureSupportFlags() {
     }
 }
 
+/**
+ * Gets or sets the reasoning effort for Chat Completion sources.
+ * @param {object} _ Named arguments
+ * @param {string} value Effort level to set. Omit to get the current one.
+ * @returns {string} The reasoning effort in effect after the command
+ */
+function reasoningEffortCallback(_, value) {
+    const effort = String(value ?? '').trim().toLowerCase();
+
+    if (!effort) {
+        return oai_settings.reasoning_effort;
+    }
+
+    const efforts = Object.values(reasoning_effort_types);
+
+    if (!efforts.includes(effort)) {
+        throw new Error(`Unknown reasoning effort "${effort}". Allowed values: ${efforts.join(', ')}.`);
+    }
+
+    oai_settings.reasoning_effort = effort;
+    $('#openai_reasoning_effort').val(effort);
+    saveSettingsDebounced();
+    return effort;
+}
+
 export function initOpenAI() {
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'reasoning-effort',
+        callback: reasoningEffortCallback,
+        returns: 'the reasoning effort in effect after the command',
+        namedArgumentList: [],
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'effort level. Omit to get the current one.',
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+                acceptsMultiple: false,
+                enumProvider: () => Object.values(reasoning_effort_types).map(effort => {
+                    const label = $(`#openai_reasoning_effort option[value="${effort}"]`).text().trim();
+                    return new SlashCommandEnumValue(effort, label || effort);
+                }),
+            }),
+        ],
+        helpString: `
+            <div>
+                Gets or sets the Reasoning Effort setting. Chat Completion sources only.
+            </div>
+            <div>
+                Called without an argument, returns the current level without changing it.
+            </div>
+            <div>
+                <strong>Example:</strong>
+                <ul>
+                    <li>
+                        <pre><code>/reasoning-effort high</code></pre>
+                    </li>
+                    <li>
+                        <pre><code>/reasoning-effort | /echo</code></pre>
+                    </li>
+                </ul>
+            </div>
+        `,
+        aliases: [],
+    }));
+
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'proxy',
         callback: runProxyCallback,

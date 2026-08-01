@@ -3136,6 +3136,7 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * Background generation based on the provided prompt.
  * @typedef {object} GenerateQuietPromptParams
  * @prop {string} [quietPrompt] Instruction prompt for the AI
+ * @prop {string} [quietRole] Chat Completion role to send the instruction prompt as (default "system"). Ignored by Text Completion, which has no message roles.
  * @prop {boolean} [quietToLoud] Whether the message should be sent in a foreground (loud) or background (quiet) mode
  * @prop {boolean} [skipWIAN] Whether to skip addition of World Info and Author's Note into the prompt
  * @prop {string} [quietImage] Image to use for the quiet prompt
@@ -3145,10 +3146,11 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * @prop {object} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  * @prop {boolean} [removeReasoning] Parses and removes the reasoning block according to reasoning format preferences
  * @prop {boolean} [trimToSentence] Whether to trim the response to the last complete sentence
+ * @prop {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (cheaper, but slow)
  * @param {GenerateQuietPromptParams} params Parameters for the quiet prompt generation
  * @returns {Promise<string>} Generated text. If using structured output, will contain a serialized JSON object.
  */
-export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceChId = null, jsonSchema = null, removeReasoning = true, trimToSentence = false } = {}) {
+export async function generateQuietPrompt({ quietPrompt = '', quietRole = '', quietToLoud = false, skipWIAN = false, quietImage = null, quietName = null, responseLength = null, forceChId = null, jsonSchema = null, removeReasoning = true, trimToSentence = false, batch = false } = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('generateQuietPrompt called with positional arguments. Please use an object instead.');
         [quietPrompt, quietToLoud, skipWIAN, quietImage, quietName, responseLength, forceChId, jsonSchema] = arguments;
@@ -3160,6 +3162,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
         /** @type {GenerateOptions} */
         const generateOptions = {
             quiet_prompt: quietPrompt ?? '',
+            quietRole: quietRole || '',
             quietToLoud: quietToLoud ?? false,
             skipWIAN: skipWIAN ?? false,
             force_name2: true,
@@ -3167,6 +3170,7 @@ export async function generateQuietPrompt({ quietPrompt = '', quietToLoud = fals
             quietName: quietName ?? null,
             force_chid: forceChId ?? null,
             jsonSchema: jsonSchema ?? null,
+            batch: batch ?? false,
         };
         if (responseLengthCustomized) {
             TempResponseLength.save(main_api, responseLength);
@@ -4012,14 +4016,16 @@ class StreamingProcessor {
  * @param {boolean} quietToLoud true to generate a message in system mode, false to generate a message in character mode
  * @param {string} [systemPrompt] System prompt to use.
  * @param {string} [prefill] Prefill for the prompt.
+ * @param {string} [role] Role to send a string prompt as. Ignored when the prompt already carries its own roles.
  * @returns {string | object[]} Prompt ready for use in generation. If using TC, this will be a string. If using CC, this will be an array of chat-style messages.
  */
-export function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill) {
+export function createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill, role = 'user') {
     const isInstruct = power_user.instruct.enabled && api !== 'openai' && api !== 'novel' && !instructOverride;
 
-    // If the prompt was given as a string, convert to a message-style object assuming user role
+    // If the prompt was given as a string, convert to a message-style object using the
+    // requested role (user unless the caller asked otherwise).
     if (typeof prompt === 'string') {
-        const message = { role: 'user', content: prompt.trim() };
+        const message = { role: role || 'user', content: prompt.trim() };
         prompt = [message];
     } else {  // checks for message-style object
         if (prompt.length === 0 && !systemPrompt) throw Error('No messages provided');
@@ -4082,6 +4088,8 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @prop {boolean} [trimNames] Whether to allow trimming "{{user}}:" and "{{char}}:" from the response.
  * @prop {string} [prefill] An optional prefill for the prompt.
  * @prop {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @prop {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (Chat Completion only).
+ * @prop {string} [role] Role to send a string prompt as (default "user"). Ignored when `prompt` is an array of messages with their own roles.
  */
 
 /**
@@ -4090,7 +4098,7 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<object | string>} Raw API response data, or a JSON string extracted from the response when `jsonSchema` is provided.
  */
-export async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null } = {}) {
+export async function generateRawData({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, prefill = '', jsonSchema = null, batch = false, role = 'user' } = {}) {
     if (!api) {
         api = main_api;
     }
@@ -4100,7 +4108,7 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
     let eventHook = () => { };
 
     // construct final prompt from the input. Can either be a string or an array of chat-style messages.
-    prompt = createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill);
+    prompt = createRawPrompt(prompt, api, instructOverride, quietToLoud, systemPrompt, prefill, role);
 
     // Allow extensions to stop generation before it happens
     const eventAbortController = new AbortController();
@@ -4167,7 +4175,7 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
         if (api === 'koboldhorde') {
             data = await generateHorde(prompt.toString(), generateData, abortController.signal, false);
         } else if (api === 'openai') {
-            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema });
+            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema, batch });
         } else {
             const generateUrl = getGenerateUrl(api);
             const response = await fetch(generateUrl, {
@@ -4212,13 +4220,13 @@ export async function generateRawData({ prompt = '', api = null, instructOverrid
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<string>} Generated output: a cleaned-up message string when `jsonSchema` is not provided, or an extracted JSON string conforming to `jsonSchema` when it is.
  */
-export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
+export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null, batch = false, role = 'user' } = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('generateRaw called with positional arguments. Please use an object instead.');
         [prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, trimNames, prefill, jsonSchema] = arguments;
     }
 
-    const data = await generateRawData({ prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, prefill, jsonSchema });
+    const data = await generateRawData({ prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, prefill, jsonSchema, batch, role });
 
     // JSON string (matching the provided schema) will already be extracted.
     if (jsonSchema) {
@@ -4362,6 +4370,7 @@ function removeLastMessage() {
  * @property {boolean} [automatic_trigger] If the generation was triggered automatically (e.g. group auto mode).
  * @property {boolean} [force_name2] If a char name should be forced to add to the prompt's last line (Text Completion, non-Instruct only).
  * @property {string} [quiet_prompt] A system instruction to use for the quiet prompt.
+ * @property {string} [quietRole] Chat Completion role to send the quiet prompt as (default "system"). Ignored by Text Completion, which has no message roles.
  * @property {boolean} [quietToLoud] Whether the system instruction should be sent in background (quiet) or a foreground (loud) mode.
  * @property {boolean} [skipWIAN] Skip adding World Info and Author's Note to the prompt.
  * @property {number} [force_chid] Force character ID to use for the generation. Only works in groups.
@@ -4370,6 +4379,7 @@ function removeLastMessage() {
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @property {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (quiet generations only).
  */
 
 /**
@@ -4380,7 +4390,7 @@ function removeLastMessage() {
  * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0 } = {}, dryRun = false) {
+export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietRole, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, batch = false, depth = 0 } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -5406,6 +5416,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 bias: promptBias,
                 type: type,
                 quietPrompt: quiet_prompt,
+                quietRole: quietRole,
                 quietImage: quietImage,
                 cyclePrompt: cyclePrompt,
                 systemPromptOverride: system,
@@ -5576,7 +5587,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                     streamingProcessor = null;
                     depth = depth + 1;
                     await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
+                    return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietRole, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
                 }
             }
 
@@ -5590,7 +5601,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 });
             }
         } else {
-            return await sendGenerationRequest(type, generate_data, { jsonSchema });
+            return await sendGenerationRequest(type, generate_data, { jsonSchema, batch });
         }
     }
 
@@ -5712,7 +5723,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
                 depth = depth + 1;
                 await ToolManager.saveFunctionToolInvocations(invocationResult.invocations);
-                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
+                return Generate('normal', { automatic_trigger, force_name2, quiet_prompt, quietRole, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, depth }, dryRun);
             }
         }
 
@@ -6260,6 +6271,7 @@ function setInContextMessages(msgInContextCount, type) {
 /**
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
+ * @property {boolean} [batch] Send through the Claude Message Batches API and wait for the result. Chat Completion only.
  */
 
 /**

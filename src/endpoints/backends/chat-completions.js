@@ -3638,6 +3638,10 @@ router.post('/claude-batch/submit', async function (request, response) {
             model: request.body.model,
             createdAt: Date.now(),
             status: 'in_progress',
+            // An awaited batch (`/gen batch=true`) is delivered by returning it to the
+            // caller, not by writing into a chat. Recorded here rather than through
+            // /annotate so a reload in that window can't mistake it for a chat message.
+            ...(request.body.batch_mode === 'slash' ? { mode: 'slash' } : {}),
         };
         addClaudeBatchJob(request.user.directories, job);
 

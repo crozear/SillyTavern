@@ -71,6 +71,7 @@ import { getContext, saveMetadataDebounced } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { findGroupMemberId, groups, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, saveGroupChat, selected_group, getGroupMembers } from './group-chats.js';
 import { chat_completion_sources, MINIMAX_ENDPOINT, oai_settings, promptManager, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from './openai.js';
+import { getClaudeBatchOnDemandBlocker } from './claude-batch.js';
 import { user_avatar } from './personas.js';
 import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, playMessageSound, power_user } from './power-user.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
@@ -2234,12 +2235,33 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'as',
-                description: t`role of the output prompt`,
+                description: t`whether the reply is generated in background (system) or character (char) voice`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
                     new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.assistant),
                     new SlashCommandEnumValue('char', null, enumTypes.enum, enumIcons.character),
                 ],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'role',
+                description: t`Chat Completion role to send the prompt as. Text Completion has no message roles and ignores this.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                defaultValue: 'system',
+                isRequired: false,
+                enumList: [
+                    new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.system),
+                    new SlashCommandEnumValue('user', null, enumTypes.enum, enumIcons.user),
+                    new SlashCommandEnumValue('assistant', null, enumTypes.enum, enumIcons.assistant),
+                    new SlashCommandEnumValue('developer', t`OpenAI-compatible sources only; sent as system elsewhere`, enumTypes.enum, enumIcons.developer),
+                ],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'batch',
+                description: t`send through the Claude Message Batches API (~50% cost) and wait for the reply, which can take several minutes`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'false',
+                isRequired: false,
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
             }),
         ],
         unnamedArgumentList: [
@@ -2252,7 +2274,13 @@ export function initDefaultSlashCommands() {
             ${t`Generates text using the provided prompt and passes it to the next command through the pipe, optionally locking user input while generating and allowing to configure the in-prompt name for instruct mode (default = "System").`}
         </div>
         <div>
-            ${t`"as" argument controls the role of the output prompt: system (default) or char. If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
+            ${t`"as" argument controls whose voice the reply is generated in: system (default) for a background reply, or char to answer as the character. If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
+        </div>
+        <div>
+            ${t`"role" argument sets the Chat Completion role the prompt is sent as: system (default), user, assistant or developer, e.g. <pre><code>/gen role=user Summarize the chat</code></pre> "developer" is only distinct on OpenAI-compatible sources and is sent as system elsewhere. Text Completion APIs have no message roles and ignore this argument.`}
+        </div>
+        <div>
+            ${t`Use batch=true to run the generation through the Claude Message Batches API at roughly half the cost, e.g. <pre><code>/gen batch=true Summarize the chat</code></pre> It requires a batch-enabled Claude model and an sk-ant API key as the proxy password. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
         </div>
     `,
     }));
@@ -2272,12 +2300,25 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'as',
-                description: t`role of the output prompt`,
+                description: t`whether the reply is generated in background (system) or character (char) voice`,
                 defaultValue: 'system',
                 typeList: [ARGUMENT_TYPE.STRING],
                 enumList: [
                     new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.assistant),
                     new SlashCommandEnumValue('char', null, enumTypes.enum, enumIcons.character),
+                ],
+            }),
+            SlashCommandNamedArgument.fromProps({
+                name: 'role',
+                description: t`role to send the prompt as. On Text Completion it selects the name prefix and instruct sequences instead.`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                defaultValue: 'user',
+                isRequired: false,
+                enumList: [
+                    new SlashCommandEnumValue('user', null, enumTypes.enum, enumIcons.user),
+                    new SlashCommandEnumValue('system', null, enumTypes.enum, enumIcons.system),
+                    new SlashCommandEnumValue('assistant', null, enumTypes.enum, enumIcons.assistant),
+                    new SlashCommandEnumValue('developer', t`OpenAI-compatible sources only; sent as system elsewhere`, enumTypes.enum, enumIcons.developer),
                 ],
             }),
             new SlashCommandNamedArgument(
@@ -2292,6 +2333,14 @@ export function initDefaultSlashCommands() {
             new SlashCommandNamedArgument(
                 'trim', t`trim {{user}} and {{char}} prefixes from the output`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'on', commonEnumProviders.boolean('onOff')(),
             ),
+            SlashCommandNamedArgument.fromProps({
+                name: 'batch',
+                description: t`send through the Claude Message Batches API (~50% cost) and wait for the reply, which can take several minutes`,
+                typeList: [ARGUMENT_TYPE.BOOLEAN],
+                defaultValue: 'false',
+                isRequired: false,
+                enumProvider: commonEnumProviders.boolean('trueFalse'),
+            }),
         ],
         unnamedArgumentList: [
             new SlashCommandArgument(
@@ -2309,10 +2358,16 @@ export function initDefaultSlashCommands() {
             ${t`Use stop=... with a JSON-serialized array to add one-time custom stop strings, e.g. <pre><code>/genraw stop=["\\n"] Say hi</code></pre>`}
         </div>
         <div>
-            ${t`"as" argument controls the role of the output prompt: system (default) or char. "system" argument adds an (optional) system prompt at the start.`}
+            ${t`"as" argument controls whose voice the reply is generated in: system (default) for a background reply, or char to answer as the character. "system" argument adds an (optional) system prompt at the start.`}
+        </div>
+        <div>
+            ${t`"role" argument sets the role the prompt itself is sent as: user (default), system, assistant or developer, e.g. <pre><code>/genraw role=system You are a helpful assistant</code></pre> On Text Completion it selects the name prefix and instruct sequences wrapping the prompt instead.`}
         </div>
         <div>
             ${t`If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
+        </div>
+        <div>
+            ${t`Use batch=true to run the generation through the Claude Message Batches API at roughly half the cost, e.g. <pre><code>/genraw batch=true Why is the sky blue?</code></pre> It requires a batch-enabled Claude model and an sk-ant API key as the proxy password. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
         </div>
     `,
     }));
@@ -4419,6 +4474,41 @@ function fuzzyCallback(args, searchInValue) {
     }
 }
 
+/**
+ * Chat Completion roles a /gen or /genraw prompt can be sent as. `developer` only
+ * exists on OpenAI-compatible sources; everywhere else the backend normalizes it
+ * back to `system`, so offering it is safe on any source.
+ */
+const GENERATE_PROMPT_ROLES = ['system', 'user', 'assistant', 'developer'];
+
+/**
+ * Resolves the "role" argument of /gen and /genraw.
+ * @param {string} value Raw argument value
+ * @param {string} fallback Role to use when the argument is omitted
+ * @param {boolean} [chatCompletionOnly] Whether the role is dropped on Text Completion APIs
+ * @returns {string|null} Role to send the prompt as, or null if the value was invalid
+ */
+function resolveGeneratePromptRole(value, fallback, chatCompletionOnly = false) {
+    const role = String(value ?? '').trim().toLowerCase();
+
+    if (!role) {
+        return fallback;
+    }
+
+    if (!GENERATE_PROMPT_ROLES.includes(role)) {
+        toastr.error(t`Unknown role "${role}". Use one of: ${GENERATE_PROMPT_ROLES.join(', ')}.`, t`Invalid role`);
+        return null;
+    }
+
+    // /gen's prompt is appended as plain text on Text Completion, with no message
+    // role to carry. Say the argument was dropped rather than pretending it applied.
+    if (chatCompletionOnly && role !== fallback && main_api !== 'openai') {
+        toastr.warning(t`The "role" argument only applies to Chat Completion APIs. It was ignored.`, t`Role ignored`, { preventDuplicates: true });
+    }
+
+    return role;
+}
+
 function setEphemeralStopStrings(value) {
     if (typeof value === 'string' && value.length) {
         try {
@@ -4447,6 +4537,20 @@ async function generateRawCallback(args, value) {
     const prefillPrompt = resolveVariable(args?.prefill) || '';
     const length = Number(resolveVariable(args?.length) ?? 0) || 0;
     const trimNames = !isFalseBoolean(args?.trim);
+    const batch = isTrueBoolean(args?.batch);
+
+    // Batching is a cost choice, so an ineligible setup is refused with a reason
+    // rather than quietly sent as a full-price synchronous request.
+    const batchBlocker = batch ? getClaudeBatchOnDemandBlocker() : null;
+    if (batchBlocker) {
+        toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000 });
+        return '';
+    }
+
+    const role = resolveGeneratePromptRole(args?.role, 'user');
+    if (role === null) {
+        return '';
+    }
 
     try {
         if (lock) {
@@ -4463,6 +4567,8 @@ async function generateRawCallback(args, value) {
             responseLength: length,
             trimNames: trimNames,
             prefill: prefillPrompt,
+            batch: batch,
+            role: role,
         };
         const result = await generateRaw(params);
         return result;
@@ -4492,6 +4598,20 @@ async function generateCallback(args, value) {
     const as = args?.as || 'system';
     const quietToLoud = as === 'char';
     const length = Number(resolveVariable(args?.length) ?? 0) || 0;
+    const batch = isTrueBoolean(args?.batch);
+
+    // Batching is a cost choice, so an ineligible setup is refused with a reason
+    // rather than quietly sent as a full-price synchronous request.
+    const batchBlocker = batch ? getClaudeBatchOnDemandBlocker() : null;
+    if (batchBlocker) {
+        toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000 });
+        return '';
+    }
+
+    const role = resolveGeneratePromptRole(args?.role, 'system', true);
+    if (role === null) {
+        return '';
+    }
 
     try {
         if (lock) {
@@ -4509,6 +4629,8 @@ async function generateCallback(args, value) {
             responseLength: length,
             trimToSentence: trim,
             forceChId: char ? characters.indexOf(char) : null,
+            batch: batch,
+            quietRole: role,
         };
         const result = await generateQuietPrompt(params);
         return result;

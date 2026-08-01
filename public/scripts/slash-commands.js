@@ -2244,7 +2244,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'role',
-                description: t`Chat Completion role to send the prompt as. Text Completion has no message roles and ignores this.`,
+                description: t`Chat Completion role to send this command's own prompt as. Does not re-role injections or chat history. Text Completion has no message roles and ignores this.`,
                 typeList: [ARGUMENT_TYPE.STRING],
                 defaultValue: 'system',
                 isRequired: false,
@@ -2277,7 +2277,7 @@ export function initDefaultSlashCommands() {
             ${t`"as" argument controls whose voice the reply is generated in: system (default) for a background reply, or char to answer as the character. If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
         </div>
         <div>
-            ${t`"role" argument sets the Chat Completion role the prompt is sent as: system (default), user, assistant or developer, e.g. <pre><code>/gen role=user Summarize the chat</code></pre> "developer" is only distinct on OpenAI-compatible sources and is sent as system elsewhere. Text Completion APIs have no message roles and ignore this argument.`}
+            ${t`"role" argument sets the Chat Completion role of the prompt this command adds: system (default), user, assistant or developer, e.g. <pre><code>/gen role=user Summarize the chat</code></pre> It applies only to that prompt — it does not change the role of injections or chat history, which is what /inject role=... is for. "developer" is only distinct on OpenAI-compatible sources and is sent as system elsewhere. Text Completion APIs have no message roles and ignore this argument.`}
         </div>
         <div>
             ${t`Use batch=true to run the generation through the Claude Message Batches API at roughly half the cost, e.g. <pre><code>/gen batch=true Summarize the chat</code></pre> It requires a batch-enabled Claude model and an sk-ant API key as the proxy password. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
@@ -4611,6 +4611,13 @@ async function generateCallback(args, value) {
     const role = resolveGeneratePromptRole(args?.role, 'system', true);
     if (role === null) {
         return '';
+    }
+
+    // "role" applies to the prompt this command sends, not to anything already in the
+    // context. With no prompt there is nothing to apply it to — and re-roling an
+    // existing injection is /inject's job, not this one's.
+    if (args?.role && !value) {
+        toastr.warning(t`"role" sets the role of /gen's own prompt, and no prompt was given. To change the role of an injection, use /inject role=... instead.`, t`Role ignored`, { timeOut: 15000, extendedTimeOut: 25000 });
     }
 
     try {

@@ -51,6 +51,8 @@ let maxWaitMinutes = 90;
  * @property {number} [swipeId] Swipe slot to fill (mode 'swipe')
  * @property {string} [originalMes] Message text before the continuation (mode 'continue')
  * @property {number} [timer] setInterval handle
+ * @property {number} [pollingSince] When this session started watching the job
+ * @property {boolean} [pollingStopped] Whether the wait window ran out and polling gave up
  * @property {object} [reply] Completed reply payload, awaiting delivery
  * @property {boolean} [delivering] Guard against re-entrant delivery
  * @property {boolean} [polling] Guard against overlapping polls
@@ -443,9 +445,10 @@ function refreshCancelButton(index, message) {
         return;
     }
 
-    // Being flagged pending isn't enough: a job past maxWaitMinutes is untracked but
-    // keeps its placeholder, and cancelling needs the batchId only a tracked job has.
-    // Show the button only where it can actually do something.
+    // Being flagged pending isn't enough: a delivered or dropped job can leave its
+    // markers behind on disk, and cancelling needs the batchId only a tracked job
+    // has. Show the button only where it can actually do something — which includes
+    // a job we've stopped polling, since that's exactly when the user wants it gone.
     const jobId = message?.extra?.claude_batch_pending && message?.extra?.claude_batch_job_id;
     button.style.display = jobId && activeJobs.has(jobId) ? '' : 'none';
 }
@@ -514,6 +517,13 @@ function track(job) {
     if (activeJobs.has(job.jobId)) {
         return;
     }
+    // The give-up window runs from here, not from submission. Measured from
+    // `createdAt` — which is persisted — a job restored past the window would hit the
+    // give-up branch on its very first poll, in this session and every session after,
+    // and so could never be checked on again; "reload to resume waiting" was advice
+    // that by construction could not work.
+    job.pollingSince = Date.now();
+    job.pollingStopped = false;
     activeJobs.set(job.jobId, job);
     job.timer = setInterval(() => pollJob(job.jobId), pollIntervalMs);
     // Don't make the user wait a full interval for the first check on resume.
@@ -530,6 +540,25 @@ function untrack(jobId) {
         clearInterval(job.timer);
     }
     activeJobs.delete(jobId);
+}
+
+/**
+ * Stops polling a job but keeps it tracked. A job we've given up chasing still has a
+ * live batch behind it, and cancelling needs the batchId only a tracked job carries —
+ * so dropping it entirely would leave the user no way to be rid of it short of editing
+ * the server's job store by hand.
+ * @param {string} jobId Job identifier
+ */
+function stopPolling(jobId) {
+    const job = activeJobs.get(jobId);
+    if (!job) {
+        return;
+    }
+    if (job.timer) {
+        clearInterval(job.timer);
+        job.timer = undefined;
+    }
+    job.pollingStopped = true;
 }
 
 /**
@@ -551,7 +580,7 @@ async function ackJob(jobId) {
  */
 async function pollJob(jobId) {
     const job = activeJobs.get(jobId);
-    if (!job || job.delivering || job.polling || job.cancelling) {
+    if (!job || job.delivering || job.polling || job.cancelling || job.pollingStopped) {
         return;
     }
 
@@ -560,16 +589,16 @@ async function pollJob(jobId) {
         return;
     }
 
-    if (Date.now() - job.createdAt > maxWaitMinutes * 60 * 1000) {
-        // Anthropic allows up to 24h, so the batch may well still be running.
-        // Stop nagging the API but keep the job on the server: reloading resumes it.
-        untrack(jobId);
-        // Cancelling needs a tracked job, so the button goes with the poller.
-        refreshAllCancelButtons();
+    if (Date.now() - (job.pollingSince ?? job.createdAt) > maxWaitMinutes * 60 * 1000) {
+        // Anthropic allows up to 24h, so the batch may well still be running. Stop
+        // nagging the API but keep the job on the server: reloading starts a fresh
+        // window. The toast is clickable because otherwise a batch that never lands
+        // has no end state — it would just be re-resumed and re-warned about forever.
+        stopPolling(jobId);
         toastr.warning(
-            t`Still not done after ${String(maxWaitMinutes)} minutes — no longer polling. Reload SillyTavern to resume waiting.`,
+            t`Still not done after ${String(maxWaitMinutes)} minutes — no longer polling. Reload SillyTavern to keep waiting, or click here to drop it.`,
             t`Claude Flex batch`,
-            { timeOut: 20000 },
+            { timeOut: 20000, extendedTimeOut: 30000, onclick: () => cancelJob(jobId) },
         );
         return;
     }
@@ -578,6 +607,14 @@ async function pollJob(jobId) {
     try {
         const response = await postBatch('status', { jobId, batchId: job.batchId });
         if (!response.ok) {
+            // Anthropic deletes batches after 29 days, and a 404 is the one answer no
+            // amount of retrying will improve. Settle the placeholder instead of
+            // polling a batch that no longer exists until the window runs out.
+            if (response.status === 404) {
+                untrack(jobId);
+                await failJob(job, t`This batch is no longer available from Anthropic.`);
+                return;
+            }
             console.warn('Claude batch status check failed.', response.status);
             return;
         }
@@ -589,6 +626,13 @@ async function pollJob(jobId) {
 
         const resultResponse = await postBatch('result', { jobId, batchId: job.batchId, customId: job.customId });
         if (!resultResponse.ok) {
+            // The batch ended but its results are gone (they outlive the batch by 29
+            // days, then go too). Nothing to wait for — settle it. See above.
+            if (resultResponse.status === 404) {
+                untrack(jobId);
+                await failJob(job, t`This batch's results are no longer available from Anthropic.`);
+                return;
+            }
             console.warn('Claude batch result fetch failed.', resultResponse.status);
             return;
         }
@@ -934,10 +978,12 @@ export async function initClaudeBatchTracker() {
 
 /**
  * Whether any batch job is currently pending. Used for UI affordances.
+ * A job we've stopped polling is still tracked so it stays cancellable, but nothing
+ * is waiting on it any more — it doesn't count as pending.
  * @returns {boolean}
  */
 export function hasPendingClaudeBatches() {
-    return activeJobs.size > 0;
+    return [...activeJobs.values()].some(job => !job.pollingStopped);
 }
 
 /**
@@ -951,5 +997,8 @@ export function hasPendingClaudeBatchForChat(chatId = getCurrentChatId()) {
     if (!chatId) {
         return false;
     }
-    return [...activeJobs.values()].some(job => job.chatId === chatId);
+    // A job we've given up polling doesn't hold the chat hostage: its placeholder is
+    // still there to be swiped away or cancelled, and blocking on it would leave the
+    // chat unusable until the user noticed why.
+    return [...activeJobs.values()].some(job => job.chatId === chatId && !job.pollingStopped);
 }

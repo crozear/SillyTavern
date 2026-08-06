@@ -3089,6 +3089,14 @@ function getReasoningEffort(settings = null, model = null) {
 
                 return reasoning_effort_types.low;
             case reasoning_effort_types.max:
+                // OpenRouter's reasoning.effort accepts the full range including 'max', and maps it
+                // down to the nearest tier the routed model actually supports. Clamping to 'high'
+                // here costs the top tier on models whose scale tops out at 'max' rather than
+                // 'high'/'xhigh' — e.g. Kimi K3, whose levels are low/high/max.
+                if (chat_completion_sources.OPENROUTER === settings.chat_completion_source) {
+                    return reasoning_effort_types.max;
+                }
+
                 return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5.(2|4)/.test(model)
                     ? reasoning_effort_types.xhigh
                     : reasoning_effort_types.high;

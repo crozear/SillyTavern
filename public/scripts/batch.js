@@ -16,22 +16,48 @@ import {
     updateMessageTokenCount,
 } from '../script.js';
 import { extractReasoningFromData } from './reasoning.js';
-import { createGenerationParameters, getChatCompletionModel, getClaudeBatchBlocker, getClaudeBatchRequestExtras, hasClaudeBatchApiKey, isClaudeBatchModeOn, oai_settings, setClaudeBatchServerEnabled } from './openai.js';
+import { createGenerationParameters, getBatchRequestExtras, getChatCompletionModel, getOnDemandBatchProvider, hasBatchApiKey, oai_settings, resolveBatchPlan, setBatchServerEnabled } from './openai.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { power_user } from './power-user.js';
 import { callGenericPopup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 
-const API_BASE = '/api/backends/chat-completions/claude-batch';
+const API_BASE = '/api/backends/chat-completions/batch';
 
 /** Text shown in the chat while the batch is cooking. */
 const PLACEHOLDER = '*⏳ Waiting for a batched reply…*';
 
-/** `quiet` is extension-internal (summarize, vectors, …): the caller awaits a
- * returned string, which a detached job can't provide. It's never triggered by
- * hand, so it runs synchronously even with Batch Processing on — the one case
- * where a sync fallback can't be a cost surprise. */
-const ALWAYS_SYNC_TYPES = new Set(['quiet']);
+/**
+ * How each provider's batch reply differs once it's back. Everything else about a
+ * job — placeholder, polling, delivery, cancellation — is provider-neutral.
+ * @type {Record<string, { label: string, source: string, usage: (reply: object) => { total: any, thinking: any } }>}
+ */
+const PROVIDERS = {
+    claude: {
+        label: 'Claude Flex batch',
+        source: 'claude',
+        // The API's own usage block (the same one behind the server's `out:` line):
+        // `output_tokens` totals the reply, and the thinking half is only summarized
+        // by the visible reasoning, so it has to come from the counter.
+        usage: reply => ({
+            total: reply?.usage?.output_tokens,
+            thinking: reply?.usage?.output_tokens_details?.thinking_tokens,
+        }),
+    },
+    openrouter: {
+        label: 'OpenRouter batch',
+        source: 'openrouter',
+        usage: reply => ({
+            total: reply?.usage?.completion_tokens,
+            thinking: reply?.usage?.completion_tokens_details?.reasoning_tokens,
+        }),
+    },
+};
+
+/** @param {string} [provider] Provider name */
+function providerInfo(provider) {
+    return PROVIDERS[provider] ?? PROVIDERS.claude;
+}
 
 /** Active jobs, keyed by jobId. @type {Map<string, BatchJob>} */
 const activeJobs = new Map();
@@ -42,7 +68,8 @@ let maxWaitMinutes = 90;
 /**
  * @typedef {object} BatchJob
  * @property {string} jobId Server-side job identifier
- * @property {string} batchId Anthropic batch identifier
+ * @property {string} provider Batch provider ('claude' | 'openrouter')
+ * @property {string} batchId Provider-side batch identifier
  * @property {string} customId custom_id of the single request in the batch
  * @property {string|null} chatId Chat the reply belongs to
  * @property {string|null} characterName Character name for toasts
@@ -63,37 +90,45 @@ let maxWaitMinutes = 90;
 /**
  * Credentials/settings the backend needs on every batch call. `generate_data` is
  * long gone by the time a resumed poller runs, so these are re-read from settings.
+ * The provider comes from the job where there is one: a resumed job may belong to
+ * an API the user has since switched away from.
+ * @param {BatchJob} [job] Job the call is about
  * @returns {object}
  */
-function batchExtras() {
-    return getClaudeBatchRequestExtras();
+function batchExtras(job) {
+    const extras = getBatchRequestExtras();
+    return job?.provider ? { ...extras, batch_provider: job.provider } : extras;
 }
 
 /**
  * @param {string} path Endpoint path under the batch API base
  * @param {object} body Request payload
+ * @param {BatchJob} [job] Job the call is about
  * @returns {Promise<Response>}
  */
-function postBatch(path, body) {
+function postBatch(path, body, job) {
     return fetch(`${API_BASE}/${path}`, {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ ...batchExtras(), ...body }),
+        body: JSON.stringify({ ...batchExtras(job), ...body }),
     });
 }
 
 /**
- * Submits a generation as a Claude batch and returns immediately, leaving a
- * placeholder message in the chat that gets filled in when the batch finishes.
+ * Submits a generation as a batch and returns immediately, leaving a placeholder
+ * message in the chat that gets filled in when the batch finishes.
  * @param {string} type Generation type
  * @param {object} generateData Generation payload from Generate() — carries the prompt, not the API body
  * @param {import('../script.js').AdditionalRequestOptions} [options] Additional request options
  * @param {AbortSignal} [signal] Generation abort signal
  * @returns {Promise<'queued'|'sync'|'refused'>} 'sync' = run the normal request; 'refused' = abort, don't bill
  */
-export async function startClaudeBatch(type, generateData, options = {}, signal = null) {
-    if (!isClaudeBatchModeOn() || ALWAYS_SYNC_TYPES.has(type)) {
-        return 'sync';
+export async function startBatch(type, generateData, options = {}, signal = null) {
+    const plan = resolveBatchPlan(type);
+    if (plan.mode !== 'batch') {
+        // Defensive only: Generate() has already shown the reason and, where the
+        // answer is "refuse", stopped before anything was committed to the chat.
+        return plan.mode === 'refuse' ? 'refused' : 'sync';
     }
 
     // A batch detaches the instant it's submitted, so an abort raised while the prompt
@@ -101,12 +136,6 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
     // generation" — has to be caught here. The synchronous path gets this for free by
     // handing the signal to fetch; there's no in-flight request for it to cancel here.
     if (signal?.aborted) {
-        return 'refused';
-    }
-
-    // Defensive only: Generate() already refuses these up front, with the toast, before
-    // anything is committed to the chat. Never silently downgrade to a paid sync call.
-    if (getClaudeBatchBlocker(type)) {
         return 'refused';
     }
 
@@ -123,7 +152,7 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
         ({ generate_data } = await createGenerationParameters(oai_settings, model, type, generateData?.prompt, options));
         await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
     } catch (error) {
-        console.error('Claude batch parameters could not be built.', error);
+        console.error('Batch parameters could not be built.', error);
         toastr.error(t`Couldn't build the batch request. Nothing was sent.`, t`Batch Processing`, { timeOut: 15000 });
         return 'refused';
     }
@@ -134,6 +163,12 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
         return 'refused';
     }
 
+    // A failed submit has sent nothing, so the model decides what happens next: for a
+    // batch-only Claude model there's no affordable synchronous form to fall back to,
+    // while an OpenRouter batch is an optimization over a request that is perfectly
+    // sendable at standard price. Either way the reason is shown, never swallowed.
+    const onSubmitFailure = plan.provider === 'claude' ? 'refused' : 'sync';
+
     try {
         response = await fetch(`${API_BASE}/submit`, {
             method: 'POST',
@@ -141,32 +176,38 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
             body: JSON.stringify({
                 ...generate_data,
                 stream: false,
+                batch_provider: plan.provider,
                 batch_chat_id: chatId ?? null,
                 batch_character_name: name2,
             }),
         });
     } catch (error) {
-        console.error('Claude batch submit failed.', error);
+        console.error('Batch submit failed.', error);
         toastr.error(t`Couldn't reach the batch endpoint. Nothing was sent.`, t`Batch Processing`, { timeOut: 15000 });
-        return 'refused';
+        return onSubmitFailure;
     }
 
     if (!response.ok) {
         const detail = await response.json().catch(() => null);
-        console.error('Claude batch submit error.', response.status, detail);
+        console.error('Batch submit error.', response.status, detail);
+        applyServerSettings(plan.provider, detail);
+        const fallbackNotice = onSubmitFailure === 'sync'
+            ? t`Batch submission failed — sending this one normally, at standard price.`
+            : t`Batch submission failed. Nothing was sent — switch to another Claude model to generate normally.`;
         toastr.error(
-            detail?.reason || t`Batch submission failed. Nothing was sent — switch to another Claude model to generate normally.`,
+            detail?.reason || fallbackNotice,
             t`Batch Processing`,
             { timeOut: 15000, extendedTimeOut: 25000 },
         );
-        return 'refused';
+        return onSubmitFailure;
     }
 
     const data = await response.json();
-    applyServerSettings(data);
+    applyServerSettings(plan.provider, data);
 
     const job = {
         jobId: data.jobId,
+        provider: data.provider ?? plan.provider,
         batchId: data.batchId,
         customId: data.customId,
         chatId: chatId ?? null,
@@ -183,7 +224,7 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
         mode: job.mode,
         swipeId: job.swipeId,
         originalMes: job.originalMes,
-    }).catch(error => console.error('Failed to persist batch delivery info.', error));
+    }, job).catch(error => console.error('Failed to persist batch delivery info.', error));
     track(job);
     // After track(): the cancel button only shows for a job that's actually tracked.
     refreshAllCancelButtons();
@@ -194,22 +235,22 @@ export async function startClaudeBatch(type, generateData, options = {}, signal 
 
 /**
  * Why an explicit `batch=true` generation can't run, if it can't. A chat generation
- * is batched because of the model it picked; this one is an opt-in on a single
- * command, so a refusal has to name what's missing instead of quietly sending the
- * request at full price. The group-chat and impersonate blockers don't apply here —
- * nothing is delivered into a chat, the caller just awaits the text.
+ * falls back to a normal send when it can't be batched; this one is an opt-in on a
+ * single command, so a refusal has to name what's missing instead of quietly sending
+ * the request at full price. The group-chat and impersonate blockers don't apply
+ * here — nothing is delivered into a chat, the caller just awaits the text.
  * @returns {string|null} Human-readable reason, or null when the batch can go ahead
  */
-export function getClaudeBatchOnDemandBlocker() {
+export function getBatchOnDemandBlocker() {
     if (main_api !== 'openai') {
         return t`batch=true needs the Chat Completion API.`;
     }
 
-    if (!isClaudeBatchModeOn()) {
-        return t`batch=true needs a batch-enabled Claude model selected (and claude.batchFlex enabled on the server).`;
+    if (!getOnDemandBatchProvider()) {
+        return t`batch=true needs a batch-capable API: a batch-enabled Claude model, or OpenRouter (with the server's batch support left on).`;
     }
 
-    if (!hasClaudeBatchApiKey()) {
+    if (!hasBatchApiKey()) {
         return t`batch=true needs an sk-ant API key as the proxy password — subscription auth is billed at full price and gets no batch discount.`;
     }
 
@@ -248,32 +289,32 @@ function interruptibleDelay(ms, signal) {
 }
 
 /**
- * Best-effort cancel of a batch nothing is waiting on any more. Anthropic drops
+ * Best-effort cancel of a batch nothing is waiting on any more. Providers drop
  * requests that haven't started yet; the endpoint drops the persisted job whatever
  * the answer, so this doubles as the acknowledgement.
- * @param {{ jobId: string, batchId: string }} job Job to abandon
+ * @param {{ jobId: string, batchId: string, provider?: string }} job Job to abandon
  * @returns {Promise<void>}
  */
 async function abandonBatch(job) {
     try {
-        await postBatch('cancel', { jobId: job.jobId, batchId: job.batchId });
+        await postBatch('cancel', { jobId: job.jobId, batchId: job.batchId }, job);
     } catch (error) {
-        console.error('Failed to cancel abandoned Claude batch.', error);
+        console.error('Failed to cancel abandoned batch.', error);
     }
 }
 
 /**
- * Runs one generation through the Message Batches API and waits for it instead of
- * detaching it into the chat. This is the `/gen batch=true` path: the caller is a
- * slash command that awaits a string, so there's no message to park a placeholder
- * in and nothing to deliver later — the reply *is* the return value.
+ * Runs one generation through the batch API and waits for it instead of detaching
+ * it into the chat. This is the `/gen batch=true` path: the caller is a slash
+ * command that awaits a string, so there's no message to park a placeholder in and
+ * nothing to deliver later — the reply *is* the return value.
  * @param {object} generateData Fully built generation parameters, as sendOpenAIRequest assembles them
  * @param {AbortSignal} [signal] Abort signal — cancels the batch and rejects
- * @returns {Promise<object>} Reply payload in the same shape the synchronous Claude path returns
+ * @returns {Promise<object>} Reply payload in the same shape the synchronous path returns
  * @throws {Error} If the batch can't be submitted, fails, is refused, or outlives the wait window
  */
-export async function requestClaudeBatchReply(generateData, signal = null) {
-    const blocker = getClaudeBatchOnDemandBlocker();
+export async function requestBatchReply(generateData, signal = null) {
+    const blocker = getBatchOnDemandBlocker();
     if (blocker) {
         throw new Error(blocker);
     }
@@ -282,6 +323,7 @@ export async function requestClaudeBatchReply(generateData, signal = null) {
         throw new Error('Batch generation was aborted.');
     }
 
+    const provider = getOnDemandBatchProvider();
     let response;
     try {
         // `batch_mode` marks the job as awaited: it has no home in any chat, so a
@@ -289,22 +331,23 @@ export async function requestClaudeBatchReply(generateData, signal = null) {
         response = await fetch(`${API_BASE}/submit`, {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ ...generateData, stream: false, batch_mode: 'slash' }),
+            body: JSON.stringify({ ...generateData, stream: false, batch_provider: provider, batch_mode: 'slash' }),
         });
     } catch (error) {
-        console.error('Claude batch submit failed.', error);
+        console.error('Batch submit failed.', error);
         throw new Error('Couldn\'t reach the batch endpoint. Nothing was sent.');
     }
 
     if (!response.ok) {
         const detail = await response.json().catch(() => null);
-        console.error('Claude batch submit error.', response.status, detail);
+        console.error('Batch submit error.', response.status, detail);
+        applyServerSettings(provider, detail);
         throw new Error(detail?.reason || 'Batch submission failed. Nothing was sent.');
     }
 
     const job = await response.json();
-    applyServerSettings(job);
-    console.info(`Awaiting Claude batch ${job.batchId} (job ${job.jobId}).`);
+    applyServerSettings(job.provider ?? provider, job);
+    console.info(`Awaiting ${providerInfo(job.provider).label} ${job.batchId} (job ${job.jobId}).`);
     toastr.info(t`Waiting for the batched reply — this can take several minutes.`, t`Batch Processing`, { timeOut: 10000 });
 
     const deadline = Date.now() + maxWaitMinutes * 60 * 1000;
@@ -318,20 +361,20 @@ export async function requestClaudeBatchReply(generateData, signal = null) {
 
             // A blip on a poll isn't a failed generation: keep asking until the
             // deadline rather than throwing away a batch that's still cooking.
-            const statusResponse = await postBatch('status', { jobId: job.jobId, batchId: job.batchId });
+            const statusResponse = await postBatch('status', { jobId: job.jobId, batchId: job.batchId }, job);
             if (!statusResponse.ok) {
-                console.warn('Claude batch status check failed.', statusResponse.status);
+                console.warn('Batch status check failed.', statusResponse.status);
                 continue;
             }
 
             const status = await statusResponse.json();
-            if (status?.processing_status !== 'ended') {
+            if (status?.state !== 'ended') {
                 continue;
             }
 
-            const resultResponse = await postBatch('result', { jobId: job.jobId, batchId: job.batchId, customId: job.customId });
+            const resultResponse = await postBatch('result', { jobId: job.jobId, batchId: job.batchId, customId: job.customId }, job);
             if (!resultResponse.ok) {
-                console.warn('Claude batch result fetch failed.', resultResponse.status);
+                console.warn('Batch result fetch failed.', resultResponse.status);
                 continue;
             }
 
@@ -341,13 +384,39 @@ export async function requestClaudeBatchReply(generateData, signal = null) {
                 throw new Error(result?.error?.message || `Batch ${result?.resultType ?? 'failed'}: no reply was produced.`);
             }
 
-            await ackJob(job.jobId);
+            await ackJob(job.jobId, job);
             return result.reply;
         }
     } catch (error) {
         await abandonBatch(job);
         throw error;
     }
+}
+
+/**
+ * The job a message is a pending placeholder for, if it is one. The `claude_`-prefixed
+ * pair is what placeholders written before OpenRouter batching carried, so both are
+ * read — a batch that was in flight across the upgrade still finds its home.
+ * @param {object} message Chat message
+ * @returns {string|null} Job identifier, or null when the message isn't pending
+ */
+function pendingJobIdOf(message) {
+    const extra = message?.extra;
+    if (!extra?.batch_pending && !extra?.claude_batch_pending) {
+        return null;
+    }
+    return extra.batch_job_id ?? extra.claude_batch_job_id ?? null;
+}
+
+/**
+ * Clears the pending markers once a job is settled, in both spellings.
+ * @param {object} extra Message `extra` object (mutated in place)
+ */
+function clearPendingMarkers(extra) {
+    delete extra.batch_pending;
+    delete extra.batch_job_id;
+    delete extra.claude_batch_pending;
+    delete extra.claude_batch_job_id;
 }
 
 /**
@@ -375,8 +444,8 @@ async function placeholderFor(job) {
 
     const message = chat[chat.length - 1];
     message.extra = message.extra ?? {};
-    message.extra.claude_batch_job_id = job.jobId;
-    message.extra.claude_batch_pending = true;
+    message.extra.batch_job_id = job.jobId;
+    message.extra.batch_pending = true;
 
     // saveReply timed and counted the placeholder text itself ("0.0s", a handful of
     // tokens). Blank both — delivery fills them with the real wait and output size.
@@ -449,7 +518,7 @@ function refreshCancelButton(index, message) {
     // markers behind on disk, and cancelling needs the batchId only a tracked job
     // has. Show the button only where it can actually do something — which includes
     // a job we've stopped polling, since that's exactly when the user wants it gone.
-    const jobId = message?.extra?.claude_batch_pending && message?.extra?.claude_batch_job_id;
+    const jobId = pendingJobIdOf(message);
     button.style.display = jobId && activeJobs.has(jobId) ? '' : 'none';
 }
 
@@ -460,19 +529,18 @@ function refreshCancelButton(index, message) {
  */
 function refreshAllCancelButtons() {
     chat.forEach((message, index) => {
-        if (message?.extra?.claude_batch_pending) {
+        if (pendingJobIdOf(message)) {
             refreshCancelButton(index, message);
         }
     });
 }
 
 /**
- * Stores a delivered reply's token counts from the API's own usage block (the same one
- * behind the server's `out:` usage line): `output_tokens` for the total and
- * `output_tokens_details.thinking_tokens` for the thinking half, which the visible
- * reasoning only summarizes. A continuation is the exception: those counts cover just
- * the appended part, but the counter describes the whole message, so it falls back to
- * counting locally.
+ * Stores a delivered reply's token counts from the API's own usage block — the same
+ * one behind the server's usage line — since the visible reasoning only summarizes
+ * the thinking the model was actually billed for. A continuation is the exception:
+ * those counts cover just the appended part, but the counter describes the whole
+ * message, so it falls back to counting locally.
  * @param {BatchJob} job Job being delivered
  * @param {object} extra Message `extra` object (mutated in place)
  * @param {string} text Final message text
@@ -484,22 +552,26 @@ async function countReplyTokens(job, extra, text, reasoning) {
         return 0;
     }
 
-    const usage = job.reply?.usage;
-    const reportedUsage = job.mode === 'continue' ? null : {
-        total: usage?.output_tokens,
-        thinking: usage?.output_tokens_details?.thinking_tokens,
-    };
+    const reportedUsage = job.mode === 'continue' ? null : providerInfo(job.provider).usage(job.reply);
     return await updateMessageTokenCount(extra, text, reasoning, reportedUsage);
 }
 
 /**
  * Reads the batch settings sent by the backend (sourced from config.yaml): the
- * master switch plus the poll cadence.
+ * provider's master switch, plus the poll cadence when they belong to the API
+ * currently in use. The cadence is a single global pair — only one provider can be
+ * selected at a time, and a resumed job of the other kind is happy to be polled on
+ * either schedule, so taking the inactive provider's numbers would be arbitrary.
+ * @param {string} provider Provider the settings belong to
  * @param {object} data Response payload from submit/list
+ * @param {boolean} [applyCadence] Whether to adopt this provider's poll timings
  */
-function applyServerSettings(data) {
+function applyServerSettings(provider, data, applyCadence = true) {
     if (typeof data?.batchEnabled === 'boolean') {
-        setClaudeBatchServerEnabled(data.batchEnabled);
+        setBatchServerEnabled(provider, data.batchEnabled);
+    }
+    if (!applyCadence) {
+        return;
     }
     if (Number.isFinite(data?.pollIntervalMs)) {
         pollIntervalMs = Math.max(5000, data.pollIntervalMs);
@@ -564,12 +636,13 @@ function stopPolling(jobId) {
 /**
  * Tells the server the job is done with, so it stops being resumed on reload.
  * @param {string} jobId Job identifier
+ * @param {BatchJob} [job] Job being acknowledged
  */
-async function ackJob(jobId) {
+async function ackJob(jobId, job) {
     try {
-        await postBatch('ack', { jobId });
+        await postBatch('ack', { jobId }, job);
     } catch (error) {
-        console.error('Failed to acknowledge Claude batch job.', error);
+        console.error('Failed to acknowledge batch job.', error);
     }
 }
 
@@ -590,14 +663,14 @@ async function pollJob(jobId) {
     }
 
     if (Date.now() - (job.pollingSince ?? job.createdAt) > maxWaitMinutes * 60 * 1000) {
-        // Anthropic allows up to 24h, so the batch may well still be running. Stop
+        // Both APIs allow up to 24h, so the batch may well still be running. Stop
         // nagging the API but keep the job on the server: reloading starts a fresh
         // window. The toast is clickable because otherwise a batch that never lands
         // has no end state — it would just be re-resumed and re-warned about forever.
         stopPolling(jobId);
         toastr.warning(
             t`Still not done after ${String(maxWaitMinutes)} minutes — no longer polling. Reload SillyTavern to keep waiting, or click here to drop it.`,
-            t`Claude Flex batch`,
+            providerInfo(job.provider).label,
             { timeOut: 20000, extendedTimeOut: 30000, onclick: () => cancelJob(jobId) },
         );
         return;
@@ -605,35 +678,36 @@ async function pollJob(jobId) {
 
     job.polling = true;
     try {
-        const response = await postBatch('status', { jobId, batchId: job.batchId });
+        const response = await postBatch('status', { jobId, batchId: job.batchId }, job);
         if (!response.ok) {
-            // Anthropic deletes batches after 29 days, and a 404 is the one answer no
-            // amount of retrying will improve. Settle the placeholder instead of
-            // polling a batch that no longer exists until the window runs out.
+            // Batches are deleted once they age out (29 days at Anthropic, 30 at
+            // OpenRouter), and a 404 is the one answer no amount of retrying will
+            // improve. Settle the placeholder instead of polling a batch that no
+            // longer exists until the window runs out.
             if (response.status === 404) {
                 untrack(jobId);
-                await failJob(job, t`This batch is no longer available from Anthropic.`);
+                await failJob(job, t`This batch is no longer available from the provider.`);
                 return;
             }
-            console.warn('Claude batch status check failed.', response.status);
+            console.warn('Batch status check failed.', response.status);
             return;
         }
 
         const status = await response.json();
-        if (status?.processing_status !== 'ended') {
+        if (status?.state !== 'ended') {
             return;
         }
 
-        const resultResponse = await postBatch('result', { jobId, batchId: job.batchId, customId: job.customId });
+        const resultResponse = await postBatch('result', { jobId, batchId: job.batchId, customId: job.customId }, job);
         if (!resultResponse.ok) {
-            // The batch ended but its results are gone (they outlive the batch by 29
-            // days, then go too). Nothing to wait for — settle it. See above.
+            // The batch ended but its results are gone. Nothing to wait for — settle
+            // it. See above.
             if (resultResponse.status === 404) {
                 untrack(jobId);
-                await failJob(job, t`This batch's results are no longer available from Anthropic.`);
+                await failJob(job, t`This batch's results are no longer available from the provider.`);
                 return;
             }
-            console.warn('Claude batch result fetch failed.', resultResponse.status);
+            console.warn('Batch result fetch failed.', resultResponse.status);
             return;
         }
 
@@ -650,7 +724,7 @@ async function pollJob(jobId) {
         job.reply = result.reply;
         await deliver(job);
     } catch (error) {
-        console.error('Claude batch poll error.', error);
+        console.error('Batch poll error.', error);
     } finally {
         job.polling = false;
     }
@@ -662,7 +736,7 @@ async function pollJob(jobId) {
  * @returns {number} Message index, or -1 if not found
  */
 function findPlaceholderIndex(jobId) {
-    return chat.findIndex(message => message?.extra?.claude_batch_job_id === jobId);
+    return chat.findIndex(message => pendingJobIdOf(message) === jobId);
 }
 
 /**
@@ -701,8 +775,7 @@ async function writeIntoChat(job, text, reasoning) {
     const message = chat[index];
     message.extra = message.extra ?? {};
     message.extra.reasoning = reasoning || '';
-    delete message.extra.claude_batch_pending;
-    delete message.extra.claude_batch_job_id;
+    clearPendingMarkers(message.extra);
     message.gen_started = message.gen_started ?? new Date(job.createdAt);
     message.gen_finished = new Date();
 
@@ -745,6 +818,7 @@ async function writeIntoChat(job, text, reasoning) {
  */
 async function deliver(job) {
     const chatName = job.characterName || t`another chat`;
+    const provider = providerInfo(job.provider);
 
     if (job.chatId && getCurrentChatId() !== job.chatId) {
         // Hold it: park the job so CHAT_CHANGED can deliver it later.
@@ -753,7 +827,7 @@ async function deliver(job) {
         }
         if (!job.notified) {
             job.notified = true;
-            toastr.success(t`Flex reply is ready in ${chatName}. Open that chat to see it.`, t`Claude Flex batch`, { timeOut: 15000 });
+            toastr.success(t`Batched reply is ready in ${chatName}. Open that chat to see it.`, provider.label, { timeOut: 15000 });
         }
         return;
     }
@@ -767,18 +841,18 @@ async function deliver(job) {
             isContinue: false,
             displayIncompleteSentences: false,
         });
-        let reasoning = getRegexedString(extractReasoningFromData(job.reply, { mainApi: 'openai', chatCompletionSource: 'claude' }) || '', regex_placement.REASONING);
+        let reasoning = getRegexedString(extractReasoningFromData(job.reply, { mainApi: 'openai', chatCompletionSource: provider.source }) || '', regex_placement.REASONING);
         if (power_user.trim_spaces) {
             reasoning = reasoning.trim();
         }
         await writeIntoChat(job, text, reasoning);
-        toastr.success(t`Flex reply delivered.`, t`Claude Flex batch`, { timeOut: 6000 });
+        toastr.success(t`Batched reply delivered.`, provider.label, { timeOut: 6000 });
     } catch (error) {
-        console.error('Failed to deliver Claude batch reply.', error);
+        console.error('Failed to deliver batch reply.', error);
     } finally {
         job.delivering = false;
         untrack(job.jobId);
-        await ackJob(job.jobId);
+        await ackJob(job.jobId, job);
     }
 }
 
@@ -802,8 +876,7 @@ async function resolvePlaceholder(job, text) {
 
     const message = chat[index];
     message.mes = text;
-    delete message.extra.claude_batch_pending;
-    delete message.extra.claude_batch_job_id;
+    clearPendingMarkers(message.extra);
     if (Array.isArray(message.swipes) && typeof message.swipe_id === 'number') {
         message.swipes[message.swipe_id] = message.mes;
     }
@@ -826,7 +899,7 @@ async function failJob(job, reason) {
         ? `${job.originalMes ?? ''}\n\n*⚠️ ${reason}*`
         : `*⚠️ ${reason}*`);
 
-    await ackJob(job.jobId);
+    await ackJob(job.jobId, job);
 }
 
 /**
@@ -843,7 +916,7 @@ async function cancelJob(jobId) {
     }
 
     const confirmed = await callGenericPopup(
-        t`Cancel this batched reply? Anthropic drops requests that haven't started yet, but one already in progress may still finish and be billed.`,
+        t`Cancel this batched reply? Requests that haven't started yet are dropped, but one already in progress may still finish and be billed.`,
         POPUP_TYPE.CONFIRM,
     );
 
@@ -857,15 +930,15 @@ async function cancelJob(jobId) {
     job.cancelling = true;
     let cancelled = false;
     try {
-        const response = await postBatch('cancel', { jobId, batchId: job.batchId });
-        // The endpoint drops the persisted job for any answer it gets back from
-        // Anthropic, refusals included; only its own 500 leaves the job on the server.
+        const response = await postBatch('cancel', { jobId, batchId: job.batchId }, job);
+        // The endpoint drops the persisted job for any answer it gets back from the
+        // provider, refusals included; only its own 500 leaves the job on the server.
         cancelled = response.status !== 500;
         if (!response.ok) {
-            console.warn('Claude batch cancel was refused upstream.', response.status);
+            console.warn('Batch cancel was refused upstream.', response.status);
         }
     } catch (error) {
-        console.error('Claude batch cancel error.', error);
+        console.error('Batch cancel error.', error);
     } finally {
         job.cancelling = false;
     }
@@ -887,7 +960,7 @@ async function cancelJob(jobId) {
  * deferred delivery for jobs whose origin chat isn't currently open.
  * @returns {Promise<void>}
  */
-export async function initClaudeBatchTracker() {
+export async function initBatchTracker() {
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         const currentChatId = getCurrentChatId();
         for (const job of [...activeJobs.values()]) {
@@ -913,7 +986,7 @@ export async function initClaudeBatchTracker() {
             return;
         }
         const index = Number(button.closest('.mes')?.getAttribute('mesid'));
-        const jobId = chat[index]?.extra?.claude_batch_job_id;
+        const jobId = pendingJobIdOf(chat[index]);
         if (jobId) {
             cancelJob(jobId);
         }
@@ -930,14 +1003,17 @@ export async function initClaudeBatchTracker() {
         }
 
         const data = await response.json();
-        applyServerSettings(data);
+        const activeProvider = getOnDemandBatchProvider() ?? 'claude';
+        for (const [provider, settings] of Object.entries(data?.settings ?? {})) {
+            applyServerSettings(provider, settings, provider === activeProvider);
+        }
 
         for (const stored of data?.jobs ?? []) {
             // An awaited batch (`/gen batch=true`) belonged to a slash command that
             // died with the page. There's nothing left to hand the reply to, and it
             // was never headed for a chat, so drop it instead of resuming it.
             if (stored.mode === 'slash') {
-                console.warn(`Dropping awaited Claude batch job ${stored.jobId} — whatever was waiting on it is gone.`);
+                console.warn(`Dropping awaited batch job ${stored.jobId} — whatever was waiting on it is gone.`);
                 await abandonBatch(stored);
                 toastr.warning(t`A batched slash command was still waiting when the page reloaded — it's been dropped.`, t`Batch Processing`, { timeOut: 12000 });
                 continue;
@@ -953,6 +1029,7 @@ export async function initClaudeBatchTracker() {
 
             track({
                 jobId: stored.jobId,
+                provider: stored.provider ?? 'claude',
                 batchId: stored.batchId,
                 customId: stored.customId,
                 chatId: stored.chatId ?? null,
@@ -969,10 +1046,10 @@ export async function initClaudeBatchTracker() {
         refreshAllCancelButtons();
 
         if (activeJobs.size) {
-            console.info(`Resumed ${activeJobs.size} Claude batch job(s).`);
+            console.info(`Resumed ${activeJobs.size} batch job(s).`);
         }
     } catch (error) {
-        console.error('Failed to restore Claude batch jobs.', error);
+        console.error('Failed to restore batch jobs.', error);
     }
 }
 
@@ -982,7 +1059,7 @@ export async function initClaudeBatchTracker() {
  * is waiting on it any more — it doesn't count as pending.
  * @returns {boolean}
  */
-export function hasPendingClaudeBatches() {
+export function hasPendingBatches() {
     return [...activeJobs.values()].some(job => !job.pollingStopped);
 }
 
@@ -993,7 +1070,7 @@ export function hasPendingClaudeBatches() {
  * @param {string} [chatId] Chat id (defaults to the open chat)
  * @returns {boolean}
  */
-export function hasPendingClaudeBatchForChat(chatId = getCurrentChatId()) {
+export function hasPendingBatchForChat(chatId = getCurrentChatId()) {
     if (!chatId) {
         return false;
     }

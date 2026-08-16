@@ -105,6 +105,9 @@ const API_SILICONFLOW_CN = 'https://api.siliconflow.cn/v1';
 const API_MINIMAX = 'https://api.minimax.io/v1';
 const API_MINIMAX_CN = 'https://api.minimaxi.com/v1';
 const API_WORKERS_AI = 'https://api.cloudflare.com/client/v4/accounts';
+const API_OPENROUTER = 'https://openrouter.ai/api/v1';
+// The Batch API sits outside /v1 and is still beta-versioned.
+const API_OPENROUTER_BATCH = 'https://openrouter.ai/api/beta/batches';
 
 /**
  * Module-scoped Claude caching defaults from config.yaml.
@@ -1317,6 +1320,155 @@ function getOpenRouterPlugins(request) {
     }
 
     return plugins;
+}
+
+/**
+ * Builds the OpenRouter-specific half of a chat completion body: routing, sampler
+ * extensions, reasoning and prompt caching. Also rewrites `request.body.messages`
+ * in place (media embedding, reasoning signatures, cache breakpoints).
+ * Shared by the synchronous /generate path and the async batch submit endpoint so
+ * both produce identical request shapes.
+ * @param {import('express').Request} request Express request
+ * @returns {object} Additional body parameters
+ */
+function getOpenRouterBodyParams(request) {
+    const includeReasoning = Boolean(request.body.include_reasoning);
+    const bodyParams = {
+        transforms: getOpenRouterTransforms(request),
+        plugins: getOpenRouterPlugins(request),
+        reasoning: {
+            exclude: !includeReasoning,
+        },
+    };
+
+    if (request.body.min_p !== undefined) {
+        bodyParams['min_p'] = request.body.min_p;
+    }
+
+    if (request.body.top_a !== undefined) {
+        bodyParams['top_a'] = request.body.top_a;
+    }
+
+    if (request.body.repetition_penalty !== undefined) {
+        bodyParams['repetition_penalty'] = request.body.repetition_penalty;
+    }
+
+    if (Array.isArray(request.body.provider) && request.body.provider.length > 0) {
+        bodyParams['provider'] = {
+            allow_fallbacks: request.body.allow_fallbacks ?? true,
+            order: request.body.provider ?? [],
+        };
+    }
+
+    if (Array.isArray(request.body.quantizations) && request.body.quantizations.length > 0) {
+        bodyParams['provider'] ??= {};
+        bodyParams['provider']['quantizations'] = request.body.quantizations;
+    }
+
+    if (request.body.use_fallback) {
+        bodyParams['route'] = 'fallback';
+    }
+
+    if (request.body.reasoning_effort) {
+        bodyParams['reasoning']['effort'] = request.body.reasoning_effort;
+    }
+
+    if (request.body.verbosity) {
+        bodyParams['verbosity'] = request.body.verbosity;
+    }
+
+    if (request.body.json_schema) {
+        bodyParams['response_format'] = {
+            type: 'json_schema',
+            json_schema: {
+                name: request.body.json_schema.name,
+                strict: request.body.json_schema.strict ?? true,
+                schema: request.body.json_schema.value,
+            },
+        };
+    }
+
+    const isClaude = /^anthropic\/claude/.test(request.body.model);
+    const isGemini = /google\/gemini/.test(request.body.model);
+
+    if (Array.isArray(request.body.messages)) {
+        embedOpenRouterMedia(request.body.messages, { audio: true, video: true });
+        addOpenRouterSignatures(request.body.messages, request.body.model);
+
+        if (isClaude) {
+            const { enableSystemPromptCache, cachingAtDepth, ttl } = resolveClaudeCachingConfig(request);
+            if (enableSystemPromptCache) {
+                cachingSystemPromptForOpenRouter(request.body.messages, ttl);
+            }
+
+            if (cachingAtDepth !== -1) {
+                cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
+            }
+        }
+
+        // Gemini on OpenRouter has no top-level system_instruction field; the system prompt
+        // must stay in the messages array. Caching uses Anthropic-style cache_control
+        // breakpoints inside the system message, and OpenRouter manages the cache TTL itself.
+        if (isGemini) {
+            const { enableSystemPromptCache } = resolveClaudeCachingConfig(request);
+            if (enableSystemPromptCache) {
+                cachingSystemPromptForOpenRouter(request.body.messages);
+            }
+        }
+    }
+
+    if (isGemini) {
+        bodyParams['safety_settings'] = GEMINI_SAFETY;
+        bodyParams['service_tier'] = request.body.service_tier;
+    }
+
+    return bodyParams;
+}
+
+/**
+ * Assembles a complete OpenRouter chat completion body from an incoming request —
+ * the same one /generate sends, minus the transport-level bits a batch can't carry.
+ * @param {import('express').Request} request Express request
+ * @returns {object} Chat completion request body
+ */
+function buildOpenRouterRequestBody(request) {
+    const bodyParams = getOpenRouterBodyParams(request);
+
+    if (Array.isArray(request.body.stop) && request.body.stop.length > 0) {
+        bodyParams['stop'] = request.body.stop;
+    }
+
+    if (Array.isArray(request.body.tools) && request.body.tools.length > 0) {
+        bodyParams['tools'] = request.body.tools;
+        bodyParams['tool_choice'] = request.body.tool_choice;
+    }
+
+    // Strip non-standard fields from messages (extensions may add metadata like 'source', 'swipe_info', etc.)
+    const messages = Array.isArray(request.body.messages)
+        ? request.body.messages.map(msg => {
+            const clean = { role: msg.role, content: msg.content };
+            if (msg.name) clean.name = msg.name;
+            if (msg.tool_calls) clean.tool_calls = msg.tool_calls;
+            if (msg.tool_call_id) clean.tool_call_id = msg.tool_call_id;
+            return clean;
+        })
+        : request.body.messages;
+
+    return {
+        'messages': messages,
+        'model': request.body.model,
+        'temperature': request.body.temperature,
+        'max_tokens': request.body.max_tokens,
+        'max_completion_tokens': request.body.max_completion_tokens,
+        'presence_penalty': request.body.presence_penalty,
+        'frequency_penalty': request.body.frequency_penalty,
+        'top_p': request.body.top_p,
+        'top_k': request.body.top_k,
+        'logit_bias': request.body.logit_bias,
+        'seed': request.body.seed,
+        'n': request.body.n,
+        ...bodyParams,
+    };
 }
 
 /**
@@ -3417,61 +3569,79 @@ router.post('/word-replacements', function (request, response) {
 });
 
 // ---------------------------------------------------------------------------
-// Claude Message Batches ("Flex" tier) — asynchronous, 50%-cost generation.
+// Asynchronous batch generation — Anthropic's Message Batches API and
+// OpenRouter's Batch API, both around 50% of the synchronous per-token price.
 // A single message generation is submitted as a batch of one, polled by the
 // frontend, and its reply is delivered back into the origin chat when ready.
 // Jobs are persisted per-user so a page reload / server restart can resume.
+//
+// Everything outside BATCH_PROVIDERS is provider-neutral: the routes dispatch on
+// the job's provider and speak one normalized vocabulary — `state` is 'pending'
+// or 'ended', `resultType` is 'succeeded', 'refused' or 'errored' — so the
+// frontend tracker never learns which API it is waiting on.
 // ---------------------------------------------------------------------------
 
 // Keep in sync with CLAUDE_BATCH_ONLY_MODELS in public/scripts/openai.js.
 const CLAUDE_BATCH_MODELS = /^claude-fable-5/;
 
-function getClaudeBatchStorePath(directories) {
-    return path.join(directories.root, 'claude-batches.json');
+const BATCH_STORE_FILE = 'batches.json';
+// The Claude-only store this replaced. Read as a fallback so a batch that was in
+// flight across the upgrade lands in a chat instead of being orphaned; the next
+// write moves the whole store to the new file.
+const LEGACY_BATCH_STORE_FILE = 'claude-batches.json';
+
+function getBatchStorePath(directories) {
+    return path.join(directories.root, BATCH_STORE_FILE);
 }
 
-function readClaudeBatchJobs(directories) {
+function readBatchJobs(directories) {
     try {
-        const storePath = getClaudeBatchStorePath(directories);
-        if (!fs.existsSync(storePath)) return [];
-        const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-        return Array.isArray(parsed) ? parsed : [];
+        const storePath = getBatchStorePath(directories);
+        const legacyPath = path.join(directories.root, LEGACY_BATCH_STORE_FILE);
+        const sourcePath = fs.existsSync(storePath)
+            ? storePath
+            : (fs.existsSync(legacyPath) ? legacyPath : null);
+        if (!sourcePath) return [];
+        const parsed = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
+        if (!Array.isArray(parsed)) return [];
+        // Jobs written before OpenRouter batching existed carry no provider.
+        return parsed.map(job => ({ provider: 'claude', ...job }));
     } catch (error) {
-        console.error('Failed to read claude-batches.json:', error);
+        console.error(`Failed to read ${BATCH_STORE_FILE}:`, error);
         return [];
     }
 }
 
-function writeClaudeBatchJobs(directories, jobs) {
+function writeBatchJobs(directories, jobs) {
     try {
-        writeFileAtomicSync(getClaudeBatchStorePath(directories), JSON.stringify(jobs, null, 2), 'utf8');
+        writeFileAtomicSync(getBatchStorePath(directories), JSON.stringify(jobs, null, 2), 'utf8');
     } catch (error) {
-        console.error('Failed to write claude-batches.json:', error);
+        console.error(`Failed to write ${BATCH_STORE_FILE}:`, error);
     }
 }
 
-function addClaudeBatchJob(directories, job) {
-    const jobs = readClaudeBatchJobs(directories);
+function addBatchJob(directories, job) {
+    const jobs = readBatchJobs(directories);
     jobs.push(job);
-    writeClaudeBatchJobs(directories, jobs);
+    writeBatchJobs(directories, jobs);
 }
 
-function findClaudeBatchJob(directories, jobId) {
-    return readClaudeBatchJobs(directories).find(job => job.jobId === jobId) ?? null;
+function findBatchJob(directories, jobId) {
+    return readBatchJobs(directories).find(job => job.jobId === jobId) ?? null;
 }
 
-function updateClaudeBatchJob(directories, jobId, patch) {
-    const jobs = readClaudeBatchJobs(directories);
+function updateBatchJob(directories, jobId, patch) {
+    const jobs = readBatchJobs(directories);
     const index = jobs.findIndex(job => job.jobId === jobId);
     if (index >= 0) {
         jobs[index] = { ...jobs[index], ...patch };
-        writeClaudeBatchJobs(directories, jobs);
+        writeBatchJobs(directories, jobs);
     }
 }
 
-function removeClaudeBatchJob(directories, jobId) {
-    const jobs = readClaudeBatchJobs(directories).filter(job => job.jobId !== jobId);
-    writeClaudeBatchJobs(directories, jobs);
+function removeBatchJob(directories, jobId) {
+    const jobs = readBatchJobs(directories).filter(job => job.jobId !== jobId);
+    writeBatchJobs(directories, jobs);
 }
 
 // Resolve the Claude key the same way sendClaudeRequest does: proxy password
@@ -3494,12 +3664,90 @@ function claudeBatchBaseUrl(request) {
     return request.body.reverse_proxy || API_CLAUDE;
 }
 
+function openRouterBatchHeaders(apiKey) {
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + apiKey,
+        ...OPENROUTER_HEADERS,
+    };
+}
+
+function openRouterBatchUrl(...parts) {
+    return parts.length ? urlJoin(API_OPENROUTER_BATCH, ...parts.map(String)) : API_OPENROUTER_BATCH;
+}
+
+/**
+ * OpenRouter's Batch API is text-only: validation rejects any request carrying an
+ * image, audio, video or file content part, and it does so for the batch as a
+ * whole. Finding it here turns an opaque 400 into an actionable refusal.
+ * @param {any[]} messages Chat completion messages
+ * @returns {string|null} The offending content part type, or null when all-text
+ */
+function findNonTextContentPart(messages) {
+    for (const message of Array.isArray(messages) ? messages : []) {
+        if (!Array.isArray(message?.content)) {
+            continue;
+        }
+        const part = message.content.find(p => p?.type && p.type !== 'text');
+        if (part) {
+            return String(part.type);
+        }
+    }
+    return null;
+}
+
 // "1m 20s" / "45s" — batches run for minutes, so wall time is the useful number.
-function formatClaudeBatchElapsed(since) {
+function formatBatchElapsed(since) {
     if (!Number.isFinite(since)) return '';
     const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
     const minutes = Math.floor(seconds / 60);
     return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/**
+ * One-line usage summary for a completed OpenRouter batch. OpenRouter prices the
+ * batch itself, so the cost is reported rather than derived from a rate table.
+ * @param {object} body Chat completion body from the batch result
+ * @param {object} batch Batch object (its `usage` carries the billed cost)
+ * @param {Record<string, any>} [extras] Trailing `key: value` fields, skipped when falsy
+ * @returns {string} Formatted line
+ */
+function formatOpenRouterBatchUsage(body, batch, extras = {}) {
+    const usage = body?.usage ?? {};
+    const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const reasoning = usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+    const cost = Number(batch?.usage?.cost ?? usage?.cost);
+    let meta = `model: ${body?.model ?? '?'} | in: ${usage.prompt_tokens ?? '?'} | out: ${usage.completion_tokens ?? '?'} | cache_read: ${cached}`;
+    if (reasoning) meta += ` | reasoning: ${reasoning}`;
+    if (Number.isFinite(cost)) meta += ` | total cost: ${Number(cost.toFixed(6))}$${batch?.usage?.is_byok ? ' (BYOK fee)' : ''}`;
+    for (const [key, value] of Object.entries(extras)) {
+        if (value) meta += ` | ${key}: ${value}`;
+    }
+    return meta;
+}
+
+/**
+ * Why an OpenRouter batch result has nothing worth delivering, if it hasn't.
+ * @param {object} choice First choice of the chat completion
+ * @returns {string|null} Human-readable reason, or null when the reply is usable
+ */
+function describeOpenRouterFinish(choice) {
+    const finishReason = choice?.finish_reason ?? choice?.native_finish_reason;
+
+    if (finishReason === 'content_filter') {
+        return 'The provider filtered this response (finish_reason: content_filter).';
+    }
+
+    const content = choice?.message?.content;
+    const hasText = typeof content === 'string'
+        ? content.trim().length > 0
+        : Array.isArray(content) && content.some(part => typeof part?.text === 'string' && part.text.trim());
+
+    if (!hasText) {
+        return `The batch produced an empty reply (finish_reason: ${finishReason ?? 'unknown'}).`;
+    }
+
+    return null;
 }
 
 // "0.018$", "0.01$" — trailing zeros trimmed so the line stays scannable.
@@ -3570,199 +3818,402 @@ function formatClaudeUsageMeta(model, usage, extras = {}, { batch = false } = {}
     return meta;
 }
 
+/**
+ * The provider-specific half of batching: credentials, eligibility, and the four
+ * calls (submit / status / result / cancel). Everything each one returns is
+ * already normalized — routes below never branch on the provider again.
+ * @type {Record<string, any>}
+ */
+const BATCH_PROVIDERS = {
+    claude: {
+        label: 'Claude',
+        configPrefix: 'claude.batchFlex',
+        // Off unless config.yaml says otherwise: the models that route here are
+        // batch-only, so turning this on is what makes them usable at all.
+        defaultEnabled: false,
+        resolveKey: resolveClaudeBatchKey,
+
+        checkEligibility(request, apiKey) {
+            // The 50% discount only applies to a real API key. Refuse rather than fall
+            // back, so an unbatchable request can never be billed at full price silently.
+            if (!apiKey || !apiKey.includes('sk-ant')) {
+                return 'Batch Processing needs an sk-ant API key as the proxy password. Nothing was sent.';
+            }
+
+            // Mirrors isClaudeBatchModeOn on the frontend: every other Claude model is
+            // cheaper on subscription usage than at half the API price, so batching it
+            // would be a net loss. Re-checked here so resumed/stale callers can't slip past.
+            if (!CLAUDE_BATCH_MODELS.test(String(request.body.model ?? ''))) {
+                return `Batch mode is not enabled for ${request.body.model}.`;
+            }
+
+            return null;
+        },
+
+        async submit(request, apiKey, customId) {
+            const { requestBody, fetchHeaders } = buildClaudeRequestBody(request, apiKey);
+            delete requestBody.stream; // streaming is not allowed inside a batch
+
+            const proxyResponse = await fetch(urlJoin(claudeBatchBaseUrl(request), 'messages/batches'), {
+                method: 'POST',
+                // Keep request-shaping beta headers (including task budgets) in sync
+                // with the synchronous Claude path. Polling endpoints need no betas.
+                headers: fetchHeaders,
+                body: JSON.stringify({ requests: [{ custom_id: customId, params: requestBody }] }),
+            });
+
+            const data = await proxyResponse.json().catch(() => null);
+            return { ok: proxyResponse.ok && Boolean(data?.id), batchId: data?.id, providerStatus: data?.processing_status, detail: data };
+        },
+
+        async status(request, apiKey) {
+            const statusUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId));
+            const proxyResponse = await fetch(statusUrl, { headers: claudeBatchHeaders(apiKey) });
+            const data = await proxyResponse.json().catch(() => null);
+            return {
+                ok: proxyResponse.ok,
+                httpStatus: proxyResponse.status,
+                state: data?.processing_status === 'ended' ? 'ended' : 'pending',
+                providerStatus: data?.processing_status,
+                counts: data?.request_counts,
+                detail: data,
+            };
+        },
+
+        async result(request, apiKey, job) {
+            const resultsUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'results');
+            const proxyResponse = await fetch(resultsUrl, { headers: claudeBatchHeaders(apiKey) });
+            const text = await proxyResponse.text();
+
+            if (!proxyResponse.ok) {
+                return { httpStatus: proxyResponse.status, detail: tryParse(text) ?? text };
+            }
+
+            // Results are JSONL. For a batch of one, pick the line for our custom_id.
+            const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+            const line = lines.find(l => !request.body.customId || l.includes(request.body.customId)) ?? lines[0];
+            if (!line) {
+                return { httpStatus: 502, detail: 'Empty batch results' };
+            }
+
+            const result = JSON.parse(line)?.result;
+            if (result?.type !== 'succeeded') {
+                return { resultType: result?.type ?? 'errored', error: result?.error ?? null };
+            }
+
+            const message = result.message ?? {};
+            const responseText = message?.content?.find(part => part.type === 'text')?.text || message?.content?.[0]?.text || '';
+
+            console.debug('Claude batch response:', message);
+            console.info(formatClaudeUsageMeta(message?.model, message?.usage, {
+                org: proxyResponse.headers.get('anthropic-organization-id'),
+                msg: message?.id,
+                batch: request.body.batchId,
+                waited: job ? formatBatchElapsed(job.createdAt) : '',
+            }, { batch: true }));
+
+            // Batches can come back refused (Fable 5 runs safety classifiers) or truncated
+            // by the context window. Both are "succeeded" results with nothing to deliver.
+            const stopNotice = describeClaudeStop(message?.stop_reason, message?.stop_details?.category);
+            if (stopNotice) {
+                return { resultType: 'refused', error: { message: stopNotice } };
+            }
+
+            return {
+                resultType: 'succeeded',
+                // Same hybrid shape the synchronous Claude path returns: OpenAI choices[] +
+                // Claude-native content[] (which extractMessageFromData reads first).
+                reply: {
+                    choices: [{ message: { content: responseText } }],
+                    content: message.content,
+                    usage: message.usage,
+                },
+            };
+        },
+
+        async cancel(request, apiKey) {
+            const cancelUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'cancel');
+            const proxyResponse = await fetch(cancelUrl, { method: 'POST', headers: claudeBatchHeaders(apiKey) });
+            return { httpStatus: proxyResponse.status, detail: await proxyResponse.json().catch(() => ({})) };
+        },
+    },
+
+    openrouter: {
+        label: 'OpenRouter',
+        configPrefix: 'openrouter.batch',
+        // On by default: unlike Claude's, this path is opt-in per request from the
+        // UI, so the checkbox is the switch and config.yaml is the override.
+        defaultEnabled: true,
+        resolveKey: (request) => readSecret(request.user.directories, SECRET_KEYS.OPENROUTER, request.body.secret_id),
+
+        checkEligibility(request, apiKey) {
+            if (!apiKey) {
+                return 'Batch requests need an OpenRouter API key. Nothing was sent.';
+            }
+
+            const partType = findNonTextContentPart(request.body.messages);
+            if (partType) {
+                return `OpenRouter's Batch API is text-only and this prompt carries ${partType} content. Untick "Batch requests" to send it normally.`;
+            }
+
+            return null;
+        },
+
+        async submit(request, apiKey, customId) {
+            const requestBody = buildOpenRouterRequestBody(request);
+            // The batch-level model applies to every request; a body that repeats it
+            // has to match exactly, so drop it rather than risk a rejected submission.
+            const model = requestBody.model;
+            delete requestBody.model;
+
+            const proxyResponse = await fetch(openRouterBatchUrl(), {
+                method: 'POST',
+                headers: openRouterBatchHeaders(apiKey),
+                // `endpoint` and `model` MUST be serialized before `requests`:
+                // OpenRouter stream-parses the body and 400s when `requests` is first.
+                body: JSON.stringify({
+                    endpoint: '/v1/chat/completions',
+                    model,
+                    requests: [{ custom_id: customId, body: requestBody }],
+                }),
+            });
+
+            const data = await proxyResponse.json().catch(() => null);
+            return { ok: proxyResponse.ok && Boolean(data?.id), batchId: data?.id, providerStatus: data?.status, detail: data };
+        },
+
+        async status(request, apiKey) {
+            const proxyResponse = await fetch(openRouterBatchUrl(request.body.batchId), { headers: openRouterBatchHeaders(apiKey) });
+            const data = await proxyResponse.json().catch(() => null);
+            const terminal = ['completed', 'failed', 'expired', 'cancelled'];
+            return {
+                ok: proxyResponse.ok,
+                httpStatus: proxyResponse.status,
+                state: terminal.includes(data?.status) ? 'ended' : 'pending',
+                providerStatus: data?.status,
+                counts: data?.request_counts,
+                detail: data,
+            };
+        },
+
+        async result(request, apiKey, job) {
+            // OpenRouter returns results inline on the batch object — there is no
+            // separate results endpoint, so this is the same GET the poller makes.
+            const proxyResponse = await fetch(openRouterBatchUrl(request.body.batchId), { headers: openRouterBatchHeaders(apiKey) });
+            const batch = await proxyResponse.json().catch(() => null);
+
+            if (!proxyResponse.ok) {
+                return { httpStatus: proxyResponse.status, detail: batch };
+            }
+
+            if (batch?.status !== 'completed') {
+                const reason = batch?.error?.message ?? `The batch ended as "${batch?.status ?? 'unknown'}" without producing a reply.`;
+                return { resultType: 'errored', error: { message: reason } };
+            }
+
+            const results = Array.isArray(batch?.results) ? batch.results : [];
+            const entry = results.find(r => r?.custom_id === request.body.customId) ?? results[0];
+            if (!entry) {
+                return { httpStatus: 502, detail: 'Batch completed with no results' };
+            }
+
+            if (entry.error || entry.response?.status_code >= 400) {
+                const reason = entry.error?.message ?? entry.response?.body?.error?.message ?? 'The provider rejected this request.';
+                return { resultType: 'errored', error: { message: reason } };
+            }
+
+            const body = entry.response?.body ?? {};
+            console.debug('OpenRouter batch response:', body);
+            console.info(formatOpenRouterBatchUsage(body, batch, {
+                gen: body?.id,
+                batch: request.body.batchId,
+                waited: job ? formatBatchElapsed(job.createdAt) : '',
+            }));
+
+            const stopNotice = describeOpenRouterFinish(body?.choices?.[0]);
+            if (stopNotice) {
+                return { resultType: 'refused', error: { message: stopNotice } };
+            }
+
+            // The raw chat completion is what the frontend's OpenRouter extractors
+            // already read (choices[0].message.content / .reasoning), so pass it through.
+            return { resultType: 'succeeded', reply: body };
+        },
+
+        async cancel(request, apiKey) {
+            // Undocumented, but the API defines `cancelling`/`cancelled` states. Treat
+            // a refusal as informational: the caller has already stopped waiting, and
+            // the persisted job is dropped either way.
+            const proxyResponse = await fetch(openRouterBatchUrl(request.body.batchId, 'cancel'), {
+                method: 'POST',
+                headers: openRouterBatchHeaders(apiKey),
+            });
+            return { httpStatus: proxyResponse.status, detail: await proxyResponse.json().catch(() => ({})) };
+        },
+    },
+};
+
+/**
+ * Which provider a batch call is about. A persisted job is authoritative — status,
+ * result and cancel calls can arrive long after the UI moved to another API — and
+ * only a submit has to fall back to what the request itself says.
+ * @param {import('express').Request} request Express request
+ * @returns {string} Provider key into BATCH_PROVIDERS
+ */
+function resolveBatchProviderName(request) {
+    const stored = request.body.jobId ? findBatchJob(request.user.directories, request.body.jobId) : null;
+    const candidate = stored?.provider
+        ?? request.body.batch_provider
+        ?? (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER ? 'openrouter' : null);
+    return candidate && candidate in BATCH_PROVIDERS ? candidate : 'claude';
+}
+
 // Frontend batch settings, so the master switch, poll interval and give-up window
-// all live in config.yaml. `enabled` is what the frontend uses to decide whether a
-// batch-only model goes through the batch API at all — it's the only off switch.
-function getClaudeBatchClientSettings() {
+// all live in config.yaml. `batchEnabled` is the server's only off switch.
+function getBatchClientSettings(providerName) {
+    const provider = BATCH_PROVIDERS[providerName] ?? BATCH_PROVIDERS.claude;
     return {
-        batchEnabled: getConfigValue('claude.batchFlex.enabled', false, 'boolean'),
-        pollIntervalMs: Math.max(5000, getConfigValue('claude.batchFlex.pollIntervalMs', 20000, 'number')),
-        maxWaitMinutes: Math.max(1, getConfigValue('claude.batchFlex.maxWaitMinutes', 90, 'number')),
+        batchEnabled: getConfigValue(`${provider.configPrefix}.enabled`, provider.defaultEnabled, 'boolean'),
+        pollIntervalMs: Math.max(5000, getConfigValue(`${provider.configPrefix}.pollIntervalMs`, 20000, 'number')),
+        maxWaitMinutes: Math.max(1, getConfigValue(`${provider.configPrefix}.maxWaitMinutes`, 90, 'number')),
     };
 }
 
+// Every provider's settings at once, for the tracker's startup fetch.
+function getAllBatchClientSettings() {
+    return Object.fromEntries(Object.keys(BATCH_PROVIDERS).map(name => [name, getBatchClientSettings(name)]));
+}
+
 // Submit a single generation as a batch of one.
-router.post('/claude-batch/submit', async function (request, response) {
+router.post(['/batch/submit', '/claude-batch/submit'], async function (request, response) {
+    const providerName = resolveBatchProviderName(request);
+    const provider = BATCH_PROVIDERS[providerName];
     try {
-        if (!getConfigValue('claude.batchFlex.enabled', false, 'boolean')) {
-            return response.status(409).send({ ineligible: true, reason: 'Batch Processing is disabled in config.yaml (claude.batchFlex.enabled).' });
+        const settings = getBatchClientSettings(providerName);
+        if (!settings.batchEnabled) {
+            return response.status(409).send({ ineligible: true, reason: `Batch Processing is disabled in config.yaml (${provider.configPrefix}.enabled).`, ...settings });
         }
 
-        // The 50% discount only applies to a real API key. Refuse rather than fall
-        // back, so an unbatchable request can never be billed at full price silently.
-        const apiKey = resolveClaudeBatchKey(request);
-        if (!apiKey || !apiKey.includes('sk-ant')) {
-            return response.status(409).send({ ineligible: true, reason: 'Batch Processing needs an sk-ant API key as the proxy password. Nothing was sent.' });
-        }
-
-        // Mirrors isClaudeBatchModeOn on the frontend: every other Claude model is
-        // cheaper on subscription usage than at half the API price, so batching it
-        // would be a net loss. Re-checked here so resumed/stale callers can't slip past.
-        if (!CLAUDE_BATCH_MODELS.test(String(request.body.model ?? ''))) {
-            return response.status(409).send({ ineligible: true, reason: `Batch mode is not enabled for ${request.body.model}.` });
-        }
+        const apiKey = provider.resolveKey(request);
 
         // The batch body is built from the same payload a synchronous /generate
         // takes, so a caller that skipped assembling it can't produce a valid batch.
         if (!Array.isArray(request.body.messages)) {
-            return response.status(409).send({ ineligible: true, reason: 'Request is missing a messages array.' });
+            return response.status(409).send({ ineligible: true, reason: 'Request is missing a messages array.', ...settings });
         }
 
-        const { requestBody, fetchHeaders } = buildClaudeRequestBody(request, apiKey);
-        delete requestBody.stream; // streaming is not allowed inside a batch
+        const ineligible = provider.checkEligibility(request, apiKey);
+        if (ineligible) {
+            return response.status(409).send({ ineligible: true, reason: ineligible, ...settings });
+        }
 
         const customId = ('st-' + uuidv4().replace(/-/g, '')).slice(0, 64);
-        const batchPayload = { requests: [{ custom_id: customId, params: requestBody }] };
+        const submission = await provider.submit(request, apiKey, customId);
 
-        const createUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches');
-        const proxyResponse = await fetch(createUrl, {
-            method: 'POST',
-            // Keep request-shaping beta headers (including task budgets) in sync
-            // with the synchronous Claude path. Polling endpoints need no betas.
-            headers: fetchHeaders,
-            body: JSON.stringify(batchPayload),
-        });
-
-        const data = await proxyResponse.json().catch(() => null);
-        if (!proxyResponse.ok || !data?.id) {
-            console.warn(color.red(`Claude batch submit failed: ${proxyResponse.status} ${JSON.stringify(data)}`));
-            return response.status(502).send({ error: true, detail: data });
+        if (!submission.ok) {
+            console.warn(color.red(`${provider.label} batch submit failed: ${JSON.stringify(submission.detail)}`));
+            return response.status(502).send({ error: true, detail: submission.detail });
         }
 
         const job = {
             jobId: uuidv4(),
-            batchId: data.id,
+            provider: providerName,
+            batchId: submission.batchId,
             customId,
             chatId: request.body.batch_chat_id ?? null,
             characterName: request.body.batch_character_name ?? null,
             model: request.body.model,
             createdAt: Date.now(),
-            status: 'in_progress',
+            status: submission.providerStatus ?? 'in_progress',
             // An awaited batch (`/gen batch=true`) is delivered by returning it to the
             // caller, not by writing into a chat. Recorded here rather than through
             // /annotate so a reload in that window can't mistake it for a chat message.
             ...(request.body.batch_mode === 'slash' ? { mode: 'slash' } : {}),
         };
-        addClaudeBatchJob(request.user.directories, job);
+        addBatchJob(request.user.directories, job);
 
-        console.info(color.blue(`Claude batch queued: ${data.id} | model: ${job.model} | status: ${data.processing_status} | job: ${job.jobId}`));
+        console.info(color.blue(`${provider.label} batch queued: ${job.batchId} | model: ${job.model} | status: ${job.status} | job: ${job.jobId}`));
         return response.send({
             jobId: job.jobId,
+            provider: providerName,
             batchId: job.batchId,
             customId,
-            processing_status: data.processing_status,
-            ...getClaudeBatchClientSettings(),
+            ...settings,
         });
     } catch (error) {
-        console.error(color.red(`Claude batch submit error: ${error?.stack || error}`));
+        console.error(color.red(`${provider.label} batch submit error: ${error?.stack || error}`));
         return response.status(500).send({ error: true });
     }
 });
 
 // Poll a batch's processing status.
-router.post('/claude-batch/status', async function (request, response) {
+router.post(['/batch/status', '/claude-batch/status'], async function (request, response) {
+    const providerName = resolveBatchProviderName(request);
+    const provider = BATCH_PROVIDERS[providerName];
     try {
-        const apiKey = resolveClaudeBatchKey(request);
-        const statusUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId));
-        const proxyResponse = await fetch(statusUrl, { headers: claudeBatchHeaders(apiKey) });
-        const data = await proxyResponse.json().catch(() => null);
+        const status = await provider.status(request, provider.resolveKey(request));
 
-        if (proxyResponse.ok && data?.processing_status && request.body.jobId) {
+        if (!status.ok) {
+            return response.status(status.httpStatus).send({ error: true, detail: status.detail });
+        }
+
+        if (status.providerStatus && request.body.jobId) {
             // Polls run every ~20s, so only a state change is worth a console line.
-            const previous = findClaudeBatchJob(request.user.directories, request.body.jobId);
-            updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: data.processing_status });
+            const previous = findBatchJob(request.user.directories, request.body.jobId);
+            updateBatchJob(request.user.directories, request.body.jobId, { status: status.providerStatus });
 
-            if (previous && previous.status !== data.processing_status) {
-                const counts = data.request_counts ?? {};
-                const summary = Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${k}: ${n}`).join(', ');
-                console.info(color.blue(`Claude batch ${request.body.batchId}: ${previous.status} → ${data.processing_status} after ${formatClaudeBatchElapsed(previous.createdAt)}${summary ? ` (${summary})` : ''}`));
+            if (previous && previous.status !== status.providerStatus) {
+                const summary = Object.entries(status.counts ?? {}).filter(([, n]) => n).map(([k, n]) => `${k}: ${n}`).join(', ');
+                console.info(color.blue(`${provider.label} batch ${request.body.batchId}: ${previous.status} → ${status.providerStatus} after ${formatBatchElapsed(previous.createdAt)}${summary ? ` (${summary})` : ''}`));
             }
         }
-        return response.status(proxyResponse.status).send(data ?? { error: true });
+
+        return response.send({ state: status.state, providerStatus: status.providerStatus, request_counts: status.counts });
     } catch (error) {
-        console.error(color.red(`Claude batch status error: ${error}`));
+        console.error(color.red(`${provider.label} batch status error: ${error}`));
         return response.status(500).send({ error: true });
     }
 });
 
 // Retrieve and reshape a completed batch's single result (word replacements applied).
-router.post('/claude-batch/result', async function (request, response) {
+router.post(['/batch/result', '/claude-batch/result'], async function (request, response) {
+    const providerName = resolveBatchProviderName(request);
+    const provider = BATCH_PROVIDERS[providerName];
     try {
-        const apiKey = resolveClaudeBatchKey(request);
-        const resultsUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'results');
-        const proxyResponse = await fetch(resultsUrl, { headers: claudeBatchHeaders(apiKey) });
-        const text = await proxyResponse.text();
+        const job = request.body.jobId ? findBatchJob(request.user.directories, request.body.jobId) : null;
+        const result = await provider.result(request, provider.resolveKey(request), job);
 
-        if (!proxyResponse.ok) {
-            return response.status(proxyResponse.status).send({ error: true, detail: tryParse(text) ?? text });
+        // No result to speak of — the fetch itself failed (a 404 tells the tracker the
+        // batch has aged out, which is the one answer retrying can't improve).
+        if (!result.resultType) {
+            return response.status(result.httpStatus ?? 502).send({ error: true, detail: result.detail });
         }
 
-        // Results are JSONL. For a batch of one, pick the line for our custom_id.
-        const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-        const line = lines.find(l => !request.body.customId || l.includes(request.body.customId)) ?? lines[0];
-        if (!line) {
-            return response.status(502).send({ error: true, detail: 'Empty batch results' });
-        }
-
-        const entry = JSON.parse(line);
-        const result = entry?.result;
-
-        const job = request.body.jobId ? findClaudeBatchJob(request.user.directories, request.body.jobId) : null;
-
-        if (result?.type !== 'succeeded') {
-            console.warn(color.red(`Claude batch ${request.body.batchId} ${result?.type ?? 'errored'}: ${JSON.stringify(result?.error ?? null)}`));
+        if (result.resultType !== 'succeeded') {
+            console.warn(color.red(`${provider.label} batch ${request.body.batchId} ${result.resultType}: ${result.error?.message ?? JSON.stringify(result.error ?? null)}`));
             if (request.body.jobId) {
-                updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: result?.type ?? 'errored' });
+                updateBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: result.resultType });
             }
-            return response.send({ resultType: result?.type ?? 'errored', error: result?.error ?? null });
+            return response.send({ resultType: result.resultType, error: result.error ?? null });
         }
 
-        const message = result.message ?? {};
-        const responseText = message?.content?.find(part => part.type === 'text')?.text || message?.content?.[0]?.text || '';
-        // Same hybrid shape the synchronous Claude path returns: OpenAI choices[] +
-        // Claude-native content[] (which extractMessageFromData reads first).
-        const reply = {
-            choices: [{ message: { content: responseText } }],
-            content: message.content,
-            usage: message.usage,
-        };
-
-        console.debug('Claude batch response:', message);
-        console.info(formatClaudeUsageMeta(message?.model, message?.usage, {
-            org: proxyResponse.headers.get('anthropic-organization-id'),
-            msg: message?.id,
-            batch: request.body.batchId,
-            waited: job ? formatClaudeBatchElapsed(job.createdAt) : '',
-        }, { batch: true }));
-
-        // Batches can come back refused (Fable 5 runs safety classifiers) or truncated
-        // by the context window. Both are "succeeded" results with nothing to deliver.
-        const stopNotice = describeClaudeStop(message?.stop_reason, message?.stop_details?.category);
-        if (stopNotice) {
-            console.warn(color.red(`Claude batch ${request.body.batchId}: ${stopNotice}`));
-            if (request.body.jobId) {
-                updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ended', resultType: 'refused' });
-            }
-            return response.send({ resultType: 'refused', error: { message: stopNotice } });
-        }
-
-        const processed = enforceWordReplacementsOnResponse(reply, getWordReplacementEnabled(request));
+        const processed = enforceWordReplacementsOnResponse(result.reply, getWordReplacementEnabled(request));
 
         if (request.body.jobId) {
-            updateClaudeBatchJob(request.user.directories, request.body.jobId, { status: 'ready', resultType: 'succeeded', resultReply: processed });
+            updateBatchJob(request.user.directories, request.body.jobId, { status: 'ready', resultType: 'succeeded', resultReply: processed });
         }
         return response.send({ resultType: 'succeeded', reply: processed });
     } catch (error) {
-        console.error(color.red(`Claude batch result error: ${error}`));
+        console.error(color.red(`${provider.label} batch result error: ${error}`));
         return response.status(500).send({ error: true });
     }
 });
 
 // Record how a completed reply should be written back into the chat. Sent right
 // after submit, once the frontend has parked its placeholder and knows the target.
-router.post('/claude-batch/annotate', function (request, response) {
+router.post(['/batch/annotate', '/claude-batch/annotate'], function (request, response) {
     if (request.body.jobId) {
-        updateClaudeBatchJob(request.user.directories, request.body.jobId, {
+        updateBatchJob(request.user.directories, request.body.jobId, {
             mode: request.body.mode ?? 'normal',
             swipeId: request.body.swipeId,
             originalMes: request.body.originalMes,
@@ -3772,33 +4223,37 @@ router.post('/claude-batch/annotate', function (request, response) {
 });
 
 // Acknowledge delivery — drop the job from the persisted store.
-router.post('/claude-batch/ack', function (request, response) {
+router.post(['/batch/ack', '/claude-batch/ack'], function (request, response) {
     if (request.body.jobId) {
-        removeClaudeBatchJob(request.user.directories, request.body.jobId);
+        removeBatchJob(request.user.directories, request.body.jobId);
     }
     return response.send({ ok: true });
 });
 
 // Cancel an in-progress batch.
-router.post('/claude-batch/cancel', async function (request, response) {
+router.post(['/batch/cancel', '/claude-batch/cancel'], async function (request, response) {
+    const providerName = resolveBatchProviderName(request);
+    const provider = BATCH_PROVIDERS[providerName];
     try {
-        const apiKey = resolveClaudeBatchKey(request);
-        const cancelUrl = urlJoin(claudeBatchBaseUrl(request), 'messages/batches', String(request.body.batchId), 'cancel');
-        const proxyResponse = await fetch(cancelUrl, { method: 'POST', headers: claudeBatchHeaders(apiKey) });
-        const data = await proxyResponse.json().catch(() => ({}));
+        const cancelled = await provider.cancel(request, provider.resolveKey(request));
         if (request.body.jobId) {
-            removeClaudeBatchJob(request.user.directories, request.body.jobId);
+            removeBatchJob(request.user.directories, request.body.jobId);
         }
-        return response.status(proxyResponse.status).send(data);
+        return response.status(cancelled.httpStatus).send(cancelled.detail);
     } catch (error) {
-        console.error(color.red(`Claude batch cancel error: ${error}`));
+        console.error(color.red(`${provider.label} batch cancel error: ${error}`));
         return response.status(500).send({ error: true });
     }
 });
 
 // List this user's persisted batch jobs (for resume on reload / restart).
-router.get('/claude-batch/list', function (request, response) {
-    return response.send({ jobs: readClaudeBatchJobs(request.user.directories), ...getClaudeBatchClientSettings() });
+router.get(['/batch/list', '/claude-batch/list'], function (request, response) {
+    return response.send({
+        jobs: readBatchJobs(request.user.directories),
+        settings: getAllBatchClientSettings(),
+        // A frontend cached from before the split reads these top-level.
+        ...getBatchClientSettings('claude'),
+    });
 });
 
 router.post('/bias', async function (request, response) {
@@ -4224,99 +4679,11 @@ router.post('/generate', async function (request, response) {
 
             embedOpenRouterMedia(request.body.messages, { audio: true, video: false });
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER) {
-            apiUrl = 'https://openrouter.ai/api/v1';
+            apiUrl = API_OPENROUTER;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.OPENROUTER, request.body.secret_id);
             // OpenRouter needs to pass the Referer and X-Title: https://openrouter.ai/docs#requests
             headers = { ...OPENROUTER_HEADERS };
-            const includeReasoning = Boolean(request.body.include_reasoning);
-            bodyParams = {
-                transforms: getOpenRouterTransforms(request),
-                plugins: getOpenRouterPlugins(request),
-                reasoning: {
-                    exclude: !includeReasoning,
-                },
-            };
-
-            if (request.body.min_p !== undefined) {
-                bodyParams['min_p'] = request.body.min_p;
-            }
-
-            if (request.body.top_a !== undefined) {
-                bodyParams['top_a'] = request.body.top_a;
-            }
-
-            if (request.body.repetition_penalty !== undefined) {
-                bodyParams['repetition_penalty'] = request.body.repetition_penalty;
-            }
-
-            if (Array.isArray(request.body.provider) && request.body.provider.length > 0) {
-                bodyParams['provider'] = {
-                    allow_fallbacks: request.body.allow_fallbacks ?? true,
-                    order: request.body.provider ?? [],
-                };
-            }
-
-            if (Array.isArray(request.body.quantizations) && request.body.quantizations.length > 0) {
-                bodyParams['provider'] ??= {};
-                bodyParams['provider']['quantizations'] = request.body.quantizations;
-            }
-
-            if (request.body.use_fallback) {
-                bodyParams['route'] = 'fallback';
-            }
-
-            if (request.body.reasoning_effort) {
-                bodyParams['reasoning']['effort'] = request.body.reasoning_effort;
-            }
-
-            if (request.body.verbosity) {
-                bodyParams['verbosity'] = request.body.verbosity;
-            }
-
-            if (request.body.json_schema) {
-                bodyParams['response_format'] = {
-                    type: 'json_schema',
-                    json_schema: {
-                        name: request.body.json_schema.name,
-                        strict: request.body.json_schema.strict ?? true,
-                        schema: request.body.json_schema.value,
-                    },
-                };
-            }
-
-            const isClaude = /^anthropic\/claude/.test(request.body.model);
-            const isGemini = /google\/gemini/.test(request.body.model);
-
-            if (Array.isArray(request.body.messages)) {
-                embedOpenRouterMedia(request.body.messages, { audio: true, video: true });
-                addOpenRouterSignatures(request.body.messages, request.body.model);
-
-                if (isClaude) {
-                    const { enableSystemPromptCache, cachingAtDepth, ttl } = resolveClaudeCachingConfig(request);
-                    if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages, ttl);
-                    }
-
-                    if (cachingAtDepth !== -1) {
-                        cachingAtDepthForOpenRouterClaude(request.body.messages, cachingAtDepth, ttl);
-                    }
-                }
-
-                // Gemini on OpenRouter has no top-level system_instruction field; the system prompt
-                // must stay in the messages array. Caching uses Anthropic-style cache_control
-                // breakpoints inside the system message, and OpenRouter manages the cache TTL itself.
-                if (isGemini) {
-                    const { enableSystemPromptCache } = resolveClaudeCachingConfig(request);
-                    if (enableSystemPromptCache) {
-                        cachingSystemPromptForOpenRouter(request.body.messages);
-                    }
-                }
-            }
-
-            if (isGemini) {
-                bodyParams['safety_settings'] = GEMINI_SAFETY;
-                bodyParams['service_tier'] = request.body.service_tier;
-            }
+            bodyParams = getOpenRouterBodyParams(request);
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             apiUrl = request.body.custom_url;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);

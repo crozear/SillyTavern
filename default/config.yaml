@@ -394,6 +394,22 @@ claude:
     # Give up waiting after this many minutes (the batch keeps running on
     # Anthropic's side and can still be retrieved later).
     maxWaitMinutes: 90
+# -- OPENROUTER API CONFIGURATION --
+openrouter:
+  # Batch API (asynchronous, ~50% cost). Unlike Claude's, this is a per-request
+  # choice: tick "Batch requests" under the OpenRouter settings and generations are
+  # submitted as a batch of one, then polled until they complete (24h window).
+  # Text-only — prompts carrying images or audio are refused, not batched.
+  # https://openrouter.ai/docs/batch-quickstart
+  batch:
+    # Master switch. When false, the UI checkbox has no effect and everything is
+    # sent as an ordinary synchronous request, at standard price.
+    enabled: true
+    # How often the frontend polls a pending batch, in milliseconds.
+    pollIntervalMs: 15000
+    # Give up waiting after this many minutes (the batch keeps running on
+    # OpenRouter's side and can still be retrieved later).
+    maxWaitMinutes: 90
 # -- GOOGLE GEMINI API CONFIGURATION --
 gemini:
   # API endpoint version ("v1beta" or "v1alpha")

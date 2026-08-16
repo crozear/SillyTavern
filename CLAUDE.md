@@ -85,16 +85,32 @@ Server-side regex system in `chat-completions.js` that swaps clinical/euphemisti
 - Group chats: modified `isValidImageUrl` null guard
 - Various `// @ts-ignore` additions for toastr calls
 
-### 7. Batch-only Claude models = Message Batches API (async, ~50% cost)
-Fable 5 is **batch-only**: selecting it routes generation through Anthropic's batch API instead of a blocking request. There is no UI toggle — the model is the switch, and `claude.batchFlex.enabled: false` in config.yaml is the only opt-out.
-- `isClaudeBatchModeOn()` (openai.js) is the single gate: Claude source + `CLAUDE_BATCH_ONLY_MODELS` (`/^claude-fable-5/`) + the server's `batchFlex.enabled`. It also forces non-streaming.
-- Server flag reaches the frontend via `batchEnabled` on the `claude-batch/{submit,list}` responses → `setClaudeBatchServerEnabled()`. Defaults to **on** when unknown, so a failed fetch can never silently bill a batch-only model at full sync price.
-- `getClaudeBatchBlocker()` refuses (never downgrades to a paid sync call) when there's no `sk-ant` proxy password, in group chats, or on impersonate
-- Generate() also passes `abortController.signal` into `startClaudeBatch()` — a cancel raised during prompt assembly (stop button, Prompt Inspector's "Cancel generation") has no in-flight request to abort, so it must be caught before submit
-- `public/scripts/claude-batch.js` — detached tracker: placeholder message → poller → delivery into the origin chat (live, or on `CHAT_CHANGED` if you navigated away)
-- Backend routes `claude-batch/{submit,status,result,ack,cancel,list}`; jobs persisted in `claude-batches.json` so reloads/restarts resume. `CLAUDE_BATCH_MODELS` there mirrors the frontend regex.
-- `buildClaudeRequestBody()` was extracted from `sendClaudeRequest` so sync + batch send identical bodies — **high upstream-merge conflict risk**
-- Config: `claude.batchFlex.{enabled,pollIntervalMs,maxWaitMinutes}`; the reverse proxy needs matching batch routes
+### 7. Batch generation (async, ~50% cost) — Claude and OpenRouter
+One tracker, two providers. Everything except credentials, eligibility and the four upstream calls is provider-neutral, and the backend normalizes both APIs' vocabulary (`state: 'pending'|'ended'`, `resultType: 'succeeded'|'refused'|'errored'`) so the frontend never learns which API it's waiting on.
+
+**The two providers get here for opposite reasons, and that drives every behavioural difference:**
+- **Claude** — Fable 5 is *batch-only*: the model is the switch (`CLAUDE_BATCH_ONLY_MODELS = /^claude-fable-5/`), there's no UI toggle, and an unbatchable request is **refused** because there's no affordable sync form.
+- **OpenRouter** — a per-request cost choice via the `openrouter_batch_enabled` checkbox (`data-source="openrouter"`, next to Streaming). Any model works, so an unbatchable request **falls back to a normal send** at standard price, with a warning toast.
+
+Key pieces:
+- `resolveBatchPlan(type, settings)` (openai.js) is the single predicate → `{ mode: 'batch'|'sync'|'refuse', provider, reason }`. `isBatchModeOn()` wraps it. Reused by the `stream` flag, `isStreamingEnabled()`, `Generate()` and the tracker so they can't drift.
+- `getOnDemandBatchProvider()` is the `/gen batch=true` variant: the argument is its own opt-in, so OpenRouter qualifies even with the checkbox off; Claude still needs a batch-only model.
+- Server flags reach the frontend as `settings: { claude: {...}, openrouter: {...} }` on `batch/list` (and flat on submit) → `setBatchServerEnabled(provider, …)`. Both default to **on** when unknown, so a failed fetch can never silently bill a batch-only model at full sync price. Only the *active* provider's poll cadence is adopted.
+- Generate() passes `abortController.signal` into `startBatch()` — a cancel raised during prompt assembly (stop button, Prompt Inspector's "Cancel generation") has no in-flight request to abort, so it must be caught before submit
+- `public/scripts/batch.js` — detached tracker: placeholder message → poller → delivery into the origin chat (live, or on `CHAT_CHANGED` if you navigated away). `PROVIDERS` there holds the only per-provider frontend differences: toast label, reasoning-extraction source, and usage-token field names.
+- Backend routes `batch/{submit,status,result,annotate,ack,cancel,list}` (the old `claude-batch/*` paths stay registered as aliases for a stale cached frontend); `BATCH_PROVIDERS` holds the per-provider half. Jobs persisted in `batches.json` (migrating from `claude-batches.json`) with a `provider` field; **a stored job's provider always wins** over the request's, since a poll can arrive long after the user switched APIs.
+- Placeholder markers on messages are `extra.batch_pending` / `extra.batch_job_id`; the old `claude_batch_*` pair is still read so a batch in flight across the upgrade lands.
+- `buildClaudeRequestBody()` / `getOpenRouterBodyParams()` were extracted from `sendClaudeRequest` and the `/generate` OpenRouter branch so sync + batch send identical bodies — **high upstream-merge conflict risk**
+- Config: `claude.batchFlex.{enabled,pollIntervalMs,maxWaitMinutes}` and `openrouter.batch.{…}`; the Claude reverse proxy needs matching batch routes
+- Tests: `tests/batch-endpoints.test.js` drives the real router with `node-fetch` mocked (`jest.unstable_mockModule`) — covers both providers' submit/status/result/cancel and the provider dispatch
+
+**OpenRouter API gotchas** (docs: `https://openrouter.ai/docs/batch-quickstart.md`):
+- `POST https://openrouter.ai/api/beta/batches` — outside `/v1`, inline `{ endpoint, model, requests: [{ custom_id, body }] }`, no JSONL upload
+- **`endpoint` and `model` must be serialized before `requests`** — the API stream-parses the body and 400s otherwise
+- Results come back **inline on `GET /api/beta/batches/:id`** — there is no separate results endpoint (unlike Anthropic's JSONL `/results`)
+- Statuses `validating → in_progress → finalizing → completed`; terminal set also includes `failed`/`expired`/`cancelled`
+- **Text-only**: image/audio/file content parts are rejected at validation, so `findNonTextContentPart()` refuses them up front with an actionable message
+- Cancel (`POST /:id/cancel`) is undocumented but implied by the `cancelling` status — treated as best-effort
 
 ## Code Style
 

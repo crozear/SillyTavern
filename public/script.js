@@ -112,10 +112,10 @@ import {
     selected_proxy,
     initOpenAI,
     getLastJailbreakInstructions,
-    isClaudeBatchModeOn,
-    getClaudeBatchBlocker,
+    isBatchModeOn,
+    resolveBatchPlan,
 } from './scripts/openai.js';
-import { hasPendingClaudeBatchForChat, initClaudeBatchTracker, startClaudeBatch } from './scripts/claude-batch.js';
+import { hasPendingBatchForChat, initBatchTracker, startBatch } from './scripts/batch.js';
 
 import {
     generateNovelWithStreaming,
@@ -813,7 +813,7 @@ async function firstLoadInit() {
     initSwipePicker();
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
-    initClaudeBatchTracker();
+    initBatchTracker();
     await eventSource.emit(event_types.APP_INITIALIZED);
     await initLoaderHandle.hide();
     await fixViewport();
@@ -3146,7 +3146,7 @@ export function getStoppingStrings(isImpersonate, isContinue, api = main_api) {
  * @prop {object} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  * @prop {boolean} [removeReasoning] Parses and removes the reasoning block according to reasoning format preferences
  * @prop {boolean} [trimToSentence] Whether to trim the response to the last complete sentence
- * @prop {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (cheaper, but slow)
+ * @prop {boolean} [batch] Run through the provider's batch API and wait for the reply (cheaper, but slow)
  * @param {GenerateQuietPromptParams} params Parameters for the quiet prompt generation
  * @returns {Promise<string>} Generated text. If using structured output, will contain a serialized JSON object.
  */
@@ -3589,10 +3589,9 @@ export function isStreamingEnabled() {
     return (
         (main_api == 'openai' &&
             oai_settings.stream_openai &&
-            // Batch Processing goes through the Message Batches API, which forbids
-            // streaming. Keep this in sync with the `stream` flag in
-            // createGenerationParameters.
-            !isClaudeBatchModeOn() &&
+            // Batch Processing goes through a batch API, which forbids streaming.
+            // Keep this in sync with the `stream` flag in createGenerationParameters.
+            !isBatchModeOn() &&
             !(oai_settings.chat_completion_source == chat_completion_sources.OPENAI && ['o1-2024-12-17', 'o1'].includes(oai_settings.openai_model))
         )
         || (main_api == 'kobold' && kai_settings.streaming_kobold && kai_flags.can_use_streaming)
@@ -4088,7 +4087,7 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @prop {boolean} [trimNames] Whether to allow trimming "{{user}}:" and "{{char}}:" from the response.
  * @prop {string} [prefill] An optional prefill for the prompt.
  * @prop {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
- * @prop {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (Chat Completion only).
+ * @prop {boolean} [batch] Run through the provider's batch API and wait for the reply (Chat Completion only).
  * @prop {string} [role] Role to send a string prompt as (default "user"). Ignored when `prompt` is an array of messages with their own roles.
  */
 
@@ -4379,7 +4378,7 @@ function removeLastMessage() {
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
- * @property {boolean} [batch] Run through the Claude Message Batches API and wait for the reply (quiet generations only).
+ * @property {boolean} [batch] Run through the provider's batch API and wait for the reply (quiet generations only).
  */
 
 /**
@@ -4432,20 +4431,28 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // A pending batch leaves a placeholder as the last message. Generating now would
     // feed it into the prompt as an assistant turn, and a swipe would swipe the
     // placeholder itself — so hold this chat until the reply lands.
-    if (!dryRun && type !== 'quiet' && hasPendingClaudeBatchForChat()) {
+    if (!dryRun && type !== 'quiet' && hasPendingBatchForChat()) {
         toastr.warning(t`A batched reply is still pending in this chat. It'll land here when it's done — other chats still work.`, t`Batch Processing`, { timeOut: 10000, preventDuplicates: true });
         unblockGeneration(type);
         return Promise.resolve();
     }
 
-    // Refuse unbatchable requests up front, before anything is committed to the chat.
-    // Batch Processing is a cost choice, so the answer is "no", never a full-price send.
-    if (!dryRun && type !== 'quiet' && isClaudeBatchModeOn()) {
-        const batchBlocker = getClaudeBatchBlocker(type);
-        if (batchBlocker) {
-            toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000, preventDuplicates: true });
-            unblockGeneration(type);
-            return Promise.resolve();
+    // Say up front, before anything is committed to the chat, when a request the user
+    // expected to be batched won't be. A batch-only Claude model has no affordable
+    // synchronous form, so that one is refused outright rather than billed at double;
+    // an OpenRouter batch is an optimization, so it just goes out at standard price.
+    if (!dryRun) {
+        const batchPlan = resolveBatchPlan(type);
+        if (batchPlan.reason) {
+            const toastOptions = { timeOut: 15000, extendedTimeOut: 25000, preventDuplicates: true };
+            if (batchPlan.mode === 'refuse') {
+                // @ts-ignore
+                toastr.error(batchPlan.reason, t`Batch Processing`, toastOptions);
+                unblockGeneration(type);
+                return Promise.resolve();
+            }
+            // @ts-ignore
+            toastr.warning(batchPlan.reason, t`Batch Processing`, toastOptions);
         }
     }
 
@@ -5524,16 +5531,16 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         console.debug(`pushed prompt bits to itemizedPrompts array. Length is now: ${itemizedPrompts.length}`);
 
-        // Batch-only models go through the Message Batches API: submit and detach, so
-        // the user can keep working while the batch cooks. A request that can't be
-        // batched is refused outright rather than silently sent at full price.
+        // Batched generations go through a batch API: submit and detach, so the user
+        // can keep working while it cooks. A request a batch-only model can't batch is
+        // refused outright rather than silently sent at full price.
         if (main_api === 'openai') {
-            const batchOutcome = await startClaudeBatch(type, generate_data, { jsonSchema }, abortController?.signal);
+            const batchOutcome = await startBatch(type, generate_data, { jsonSchema }, abortController?.signal);
             if (batchOutcome === 'queued') {
-                return { claudeBatchQueued: true };
+                return { batchQueued: true };
             }
             if (batchOutcome === 'refused') {
-                return { claudeBatchRefused: true };
+                return { batchRefused: true };
             }
         }
 
@@ -5622,7 +5629,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         // A batch was queued (delivers itself later) or refused (nothing was sent).
         // Either way there's no reply to process — just release the UI.
-        if (data?.claudeBatchQueued || data?.claudeBatchRefused) {
+        if (data?.batchQueued || data?.batchRefused) {
             unblockGeneration(type);
             streamingProcessor = null;
             return;
@@ -6271,7 +6278,7 @@ function setInContextMessages(msgInContextCount, type) {
 /**
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
- * @property {boolean} [batch] Send through the Claude Message Batches API and wait for the result. Chat Completion only.
+ * @property {boolean} [batch] Send through the provider's batch API and wait for the result. Chat Completion only.
  */
 
 /**

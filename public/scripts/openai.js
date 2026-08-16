@@ -85,7 +85,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { extension_settings } from './extensions.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE, GEMINI_SAFETY } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
-import { requestClaudeBatchReply } from './claude-batch.js';
+import { requestBatchReply } from './batch.js';
 
 export {
     openai_messages_count,
@@ -477,87 +477,158 @@ function getClaudeEffortHint(model) {
 }
 
 /**
- * Server-side `claude.batchFlex.enabled`, relayed by the batch endpoints. Assumed
- * on until the first response lands: guessing "off" would quietly send a Fable 5
- * generation as a full-price synchronous request, which is the one outcome this
- * whole path exists to prevent.
+ * Server-side master switches (`claude.batchFlex.enabled`, `openrouter.batch.enabled`),
+ * relayed by the batch endpoints. Assumed on until the first response lands: guessing
+ * "off" for Claude would quietly send a Fable 5 generation as a full-price synchronous
+ * request, which is the one outcome this whole path exists to prevent.
+ * @type {Record<string, boolean>}
  */
-let claudeBatchServerEnabled = true;
+const batchServerEnabled = {
+    claude: true,
+    openrouter: true,
+};
 
 /**
- * Records the server's `claude.batchFlex.enabled` flag. Turning it off in
- * config.yaml is the only way to take a batch-only model off the batch path.
- * @param {boolean} enabled Whether the server has batch mode enabled
+ * Records a provider's server-side master switch. Turning it off in config.yaml is
+ * the server's only way to take a request off the batch path.
+ * @param {string} provider Batch provider name
+ * @param {boolean} enabled Whether the server has batch mode enabled for it
  */
-export function setClaudeBatchServerEnabled(enabled) {
-    claudeBatchServerEnabled = Boolean(enabled);
+export function setBatchServerEnabled(provider, enabled) {
+    if (provider in batchServerEnabled) {
+        batchServerEnabled[provider] = Boolean(enabled);
+    }
 }
 
 /**
- * Whether this generation goes through the async Message Batches API. Decided by
- * the model alone (plus the config.yaml master switch) — it deliberately says
- * nothing about whether the request *can* be batched, so that an unbatchable one is
- * refused outright rather than silently falling back to a full-price sync call.
- * Use `getClaudeBatchBlocker()` for that.
+ * Which batch API this generation would go through, if any. The two providers get
+ * here for opposite reasons — Claude because the model is batch-only, OpenRouter
+ * because the user ticked a box — and that difference is what `resolveBatchPlan()`
+ * turns into "refuse" versus "send it normally".
  * @param {object} [settings] Settings object (defaults to oai_settings)
- * @returns {boolean}
+ * @returns {'claude'|'openrouter'|null} Provider, or null when this isn't a batch
  */
-export function isClaudeBatchModeOn(settings = oai_settings) {
-    return settings.chat_completion_source === chat_completion_sources.CLAUDE
-        && claudeBatchServerEnabled
-        && CLAUDE_BATCH_ONLY_MODELS.test(String(settings.claude_model ?? ''));
-}
-
-/**
- * Whether the settings carry a key the Message Batches API can actually use. The
- * 50% discount only exists for a real `sk-ant` key — subscription auth is billed at
- * full price — so every batch path gates on this and words its own refusal.
- * @param {object} [settings] Settings object (defaults to oai_settings)
- * @returns {boolean}
- */
-export function hasClaudeBatchApiKey(settings = oai_settings) {
-    return typeof settings.proxy_password === 'string' && settings.proxy_password.includes('sk-ant');
-}
-
-/**
- * Why the current request can't be batched, if it can't. Returning a reason means
- * the generation is refused — never quietly downgraded to a paid sync request.
- * Since the model *is* the switch, the way out of every one of these is to pick a
- * different Claude model (or disable claude.batchFlex in config.yaml).
- * `quiet` is the one exception (handled by the caller): it's extension-internal,
- * awaits a returned string, and is never triggered by hand.
- * @param {string} [type] Generation type
- * @param {object} [settings] Settings object (defaults to oai_settings)
- * @returns {string|null} Human-readable reason, or null when batching is fine
- */
-export function getClaudeBatchBlocker(type, settings = oai_settings) {
-    if (!hasClaudeBatchApiKey(settings)) {
-        return 'This model is batch-only, and the Message Batches API needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount — set a key, or switch model.';
+export function getBatchProvider(settings = oai_settings) {
+    if (settings.chat_completion_source === chat_completion_sources.CLAUDE) {
+        return batchServerEnabled.claude && CLAUDE_BATCH_ONLY_MODELS.test(String(settings.claude_model ?? ''))
+            ? 'claude'
+            : null;
     }
 
-    // Group generation chains each member's reply into the next member's prompt,
-    // which a detached batch can't satisfy.
-    if (selected_group) {
-        return 'This model is batch-only, and group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Switch model to generate here.';
-    }
-
-    // Impersonation lands in the send textarea, not the chat, so there's nowhere to
-    // park a placeholder and no safe way to deliver it an hour later.
-    if (type === 'impersonate') {
-        return 'This model is batch-only, and impersonate can\'t be batched — its result goes to the input box, not the chat. Switch model to use it.';
+    if (settings.chat_completion_source === chat_completion_sources.OPENROUTER) {
+        return batchServerEnabled.openrouter && settings.openrouter_batch_enabled ? 'openrouter' : null;
     }
 
     return null;
 }
 
 /**
- * Proxy credentials + word-replacement flag needed to poll/retrieve a Claude
+ * The provider an explicit `batch=true` would use. That argument is its own opt-in,
+ * so OpenRouter qualifies whether or not the chat-level checkbox is ticked. Claude
+ * still needs a batch-only model: batching any other one costs more, not less.
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {'claude'|'openrouter'|null} Provider, or null when batching isn't available
+ */
+export function getOnDemandBatchProvider(settings = oai_settings) {
+    if (settings.chat_completion_source === chat_completion_sources.OPENROUTER) {
+        return batchServerEnabled.openrouter ? 'openrouter' : null;
+    }
+    return getBatchProvider(settings);
+}
+
+/**
+ * Whether the settings carry a key the batch API can actually use. Only Claude can
+ * be checked from here: the 50% discount exists only for a real `sk-ant` key, and
+ * subscription auth is billed at full price. OpenRouter's key is a server-side
+ * secret this code can't see, so the server words that refusal instead.
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {boolean}
+ */
+export function hasBatchApiKey(settings = oai_settings) {
+    if (settings.chat_completion_source !== chat_completion_sources.CLAUDE) {
+        return true;
+    }
+    return typeof settings.proxy_password === 'string' && settings.proxy_password.includes('sk-ant');
+}
+
+/**
+ * How a generation should be sent: batched, sent normally, or refused outright.
+ * The single predicate every batch path shares, so the streaming flag, Generate()
+ * and the tracker can never disagree about what's about to happen.
+ *
+ * The two providers differ in what "can't batch this" costs. A batch-only Claude
+ * model has no cheaper synchronous form, so an unbatchable request is refused
+ * rather than silently billed at double. OpenRouter batching is a per-request cost
+ * choice over a model that is perfectly sendable at standard price, so the same
+ * situations just fall back to a normal request.
+ * @param {string} [type] Generation type
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {{ mode: 'batch'|'sync'|'refuse', provider: string|null, reason: string|null }}
+ */
+export function resolveBatchPlan(type, settings = oai_settings) {
+    const provider = getBatchProvider(settings);
+    if (!provider) {
+        return { mode: 'sync', provider: null, reason: null };
+    }
+
+    /**
+     * @param {'sync'|'refuse'} mode
+     * @param {string} reason
+     */
+    const declined = (mode, reason) => ({ mode, provider, reason });
+    // Claude's batch-only models have no affordable synchronous form; OpenRouter's
+    // do, so there the fallback is simply the normal request the user would have sent.
+    const fallback = provider === 'claude' ? 'refuse' : 'sync';
+
+    // `quiet` is extension-internal (summarize, vectors, …): the caller awaits a
+    // returned string, which a detached job can't provide. It's never triggered by
+    // hand, so it runs synchronously — the one case where a sync send can't surprise.
+    if (type === 'quiet') {
+        return { mode: 'sync', provider, reason: null };
+    }
+
+    if (!hasBatchApiKey(settings)) {
+        return declined(fallback, 'This model is batch-only, and the Message Batches API needs an sk-ant API key as the proxy password. Subscription auth is billed at full price and gets no batch discount — set a key, or switch model.');
+    }
+
+    // Group generation chains each member's reply into the next member's prompt,
+    // which a detached batch can't satisfy.
+    if (selected_group) {
+        return declined(fallback, provider === 'claude'
+            ? 'This model is batch-only, and group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Switch model to generate here.'
+            : 'Group chats can\'t be batched — each member\'s reply feeds the next member\'s prompt. Sending this one normally, at standard price.');
+    }
+
+    // Impersonation lands in the send textarea, not the chat, so there's nowhere to
+    // park a placeholder and no safe way to deliver it an hour later.
+    if (type === 'impersonate') {
+        return declined(fallback, provider === 'claude'
+            ? 'This model is batch-only, and impersonate can\'t be batched — its result goes to the input box, not the chat. Switch model to use it.'
+            : 'Impersonate can\'t be batched — its result goes to the input box, not the chat. Sending this one normally, at standard price.');
+    }
+
+    return { mode: 'batch', provider, reason: null };
+}
+
+/**
+ * Whether this generation will actually be submitted as a batch.
+ * @param {string} [type] Generation type
+ * @param {object} [settings] Settings object (defaults to oai_settings)
+ * @returns {boolean}
+ */
+export function isBatchModeOn(type, settings = oai_settings) {
+    return resolveBatchPlan(type, settings).mode === 'batch';
+}
+
+/**
+ * Provider name + credentials + word-replacement flag needed to poll/retrieve a
  * batch. Pulled live from oai_settings so it works after a reload (when the
  * original generate_data is gone) and reflects any settings changes.
- * @returns {{ reverse_proxy: string, proxy_password: string, word_replacement_enabled: boolean }}
+ * @returns {{ batch_provider: string|null, reverse_proxy: string, proxy_password: string, word_replacement_enabled: boolean }}
  */
-export function getClaudeBatchRequestExtras() {
+export function getBatchRequestExtras() {
     return {
+        batch_provider: getBatchProvider(),
         reverse_proxy: oai_settings.reverse_proxy,
         proxy_password: oai_settings.proxy_password,
         word_replacement_enabled: oai_settings.word_replacement_enabled,
@@ -603,6 +674,7 @@ export const settingsToUpdate = {
     openrouter_quantizations: ['#openrouter_quantizations_chat', 'openrouter_quantizations', false, true],
     openrouter_allow_fallbacks: ['#openrouter_allow_fallbacks', 'openrouter_allow_fallbacks', true, true],
     openrouter_middleout: ['#openrouter_middleout', 'openrouter_middleout', false, true],
+    openrouter_batch_enabled: ['#openrouter_batch_enabled', 'openrouter_batch_enabled', true, false],
     tool_reasoning_mode: ['#tool_reasoning_mode', 'tool_reasoning_mode', false, false],
     ai21_model: ['#model_ai21_select', 'ai21_model', false, true],
     mistralai_model: ['#model_mistralai_select', 'mistralai_model', false, true],
@@ -774,6 +846,7 @@ export const default_settings = {
     openrouter_quantizations: [],
     openrouter_allow_fallbacks: true,
     openrouter_middleout: openrouter_middleout_types.ON,
+    openrouter_batch_enabled: false,
     tool_reasoning_mode: tool_reasoning_modes.DISABLED,
     reverse_proxy: '',
     chat_completion_source: chat_completion_sources.OPENAI,
@@ -3228,8 +3301,10 @@ export async function createGenerationParameters(settings, model, type, messages
 
     const isO1 = gptSources.includes(settings.chat_completion_source) && ['o1-2024-12-17', 'o1'].includes(model);
     const isWorkersAIJsonMode = settings.chat_completion_source === chat_completion_sources.WORKERS_AI && jsonSchema;
-    // Claude "Flex" batch is asynchronous — the API forbids streaming inside a batch.
-    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode && !isClaudeBatchModeOn(settings);
+    // Batch generation is asynchronous — both batch APIs forbid streaming inside a
+    // batch. Asked per type, so a request that will fall back to a normal send
+    // (a group chat on OpenRouter, say) still streams.
+    const stream = settings.stream_openai && type !== 'quiet' && !isO1 && !isWorkersAIJsonMode && !isBatchModeOn(type, settings);
 
     const noMultiSwipeTypes = ['quiet', 'impersonate', 'continue'];
     const canMultiSwipe = settings.n > 1 && !noMultiSwipeTypes.includes(type) && multiswipeSources.includes(settings.chat_completion_source);
@@ -3605,11 +3680,11 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, ba
     const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema });
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
-    // An on-demand batch (`/gen batch=true`) goes through the Message Batches API but
+    // An on-demand batch (`/gen batch=true`) goes through the batch API but
     // is awaited rather than detached: the caller wants the string back. Same request
     // body, same settings event — only the transport differs.
     if (batch) {
-        return await requestClaudeBatchReply(generate_data, signal);
+        return await requestBatchReply(generate_data, signal);
     }
 
     const generate_url = '/api/backends/chat-completions/generate';
@@ -7743,6 +7818,11 @@ export function initOpenAI() {
 
     $('#stream_toggle').on('change', function () {
         oai_settings.stream_openai = !!$('#stream_toggle').prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#openrouter_batch_enabled').on('change', function () {
+        oai_settings.openrouter_batch_enabled = !!$('#openrouter_batch_enabled').prop('checked');
         saveSettingsDebounced();
     });
 

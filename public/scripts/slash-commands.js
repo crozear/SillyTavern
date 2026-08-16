@@ -71,7 +71,7 @@ import { getContext, saveMetadataDebounced } from './extensions.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { findGroupMemberId, groups, is_group_generating, openGroupById, regenerateGroup, resetSelectedGroup, saveGroupChat, selected_group, getGroupMembers } from './group-chats.js';
 import { chat_completion_sources, MINIMAX_ENDPOINT, oai_settings, promptManager, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from './openai.js';
-import { getClaudeBatchOnDemandBlocker } from './claude-batch.js';
+import { getBatchOnDemandBlocker } from './batch.js';
 import { user_avatar } from './personas.js';
 import { addEphemeralStoppingString, chat_styles, context_presets, flushEphemeralStoppingStrings, playMessageSound, power_user } from './power-user.js';
 import { SERVER_INPUTS, textgen_types, textgenerationwebui_settings } from './textgen-settings.js';
@@ -2257,7 +2257,7 @@ export function initDefaultSlashCommands() {
             }),
             SlashCommandNamedArgument.fromProps({
                 name: 'batch',
-                description: t`send through the Claude Message Batches API (~50% cost) and wait for the reply, which can take several minutes`,
+                description: t`send through the batch API (~50% cost) and wait for the reply, which can take several minutes`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 isRequired: false,
@@ -2280,7 +2280,7 @@ export function initDefaultSlashCommands() {
             ${t`"role" argument sets the Chat Completion role of the prompt this command adds: system (default), user, assistant or developer, e.g. <pre><code>/gen role=user Summarize the chat</code></pre> It applies only to that prompt — it does not change the role of injections or chat history, which is what /inject role=... is for. "developer" is only distinct on OpenAI-compatible sources and is sent as system elsewhere. Text Completion APIs have no message roles and ignore this argument.`}
         </div>
         <div>
-            ${t`Use batch=true to run the generation through the Claude Message Batches API at roughly half the cost, e.g. <pre><code>/gen batch=true Summarize the chat</code></pre> It requires a batch-enabled Claude model and an sk-ant API key as the proxy password. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
+            ${t`Use batch=true to run the generation through the provider's batch API at roughly half the cost, e.g. <pre><code>/gen batch=true Summarize the chat</code></pre> It requires batching to be available: a batch-enabled Claude model with an sk-ant API key as the proxy password, or OpenRouter with "Batch requests" ticked. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
         </div>
     `,
     }));
@@ -2335,7 +2335,7 @@ export function initDefaultSlashCommands() {
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'batch',
-                description: t`send through the Claude Message Batches API (~50% cost) and wait for the reply, which can take several minutes`,
+                description: t`send through the batch API (~50% cost) and wait for the reply, which can take several minutes`,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: 'false',
                 isRequired: false,
@@ -2367,7 +2367,7 @@ export function initDefaultSlashCommands() {
             ${t`If "length" argument is provided as a number in tokens, allows to temporarily override an API response length.`}
         </div>
         <div>
-            ${t`Use batch=true to run the generation through the Claude Message Batches API at roughly half the cost, e.g. <pre><code>/genraw batch=true Why is the sky blue?</code></pre> It requires a batch-enabled Claude model and an sk-ant API key as the proxy password. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
+            ${t`Use batch=true to run the generation through the provider's batch API at roughly half the cost, e.g. <pre><code>/genraw batch=true Why is the sky blue?</code></pre> It requires batching to be available: a batch-enabled Claude model with an sk-ant API key as the proxy password, or OpenRouter with "Batch requests" ticked. The command waits for the reply, which can take several minutes, and the result is lost if the page is reloaded before it lands.`}
         </div>
     `,
     }));
@@ -4541,7 +4541,7 @@ async function generateRawCallback(args, value) {
 
     // Batching is a cost choice, so an ineligible setup is refused with a reason
     // rather than quietly sent as a full-price synchronous request.
-    const batchBlocker = batch ? getClaudeBatchOnDemandBlocker() : null;
+    const batchBlocker = batch ? getBatchOnDemandBlocker() : null;
     if (batchBlocker) {
         toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000 });
         return '';
@@ -4602,7 +4602,7 @@ async function generateCallback(args, value) {
 
     // Batching is a cost choice, so an ineligible setup is refused with a reason
     // rather than quietly sent as a full-price synchronous request.
-    const batchBlocker = batch ? getClaudeBatchOnDemandBlocker() : null;
+    const batchBlocker = batch ? getBatchOnDemandBlocker() : null;
     if (batchBlocker) {
         toastr.error(batchBlocker, t`Batch Processing`, { timeOut: 15000, extendedTimeOut: 25000 });
         return '';

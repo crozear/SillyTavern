@@ -489,6 +489,7 @@ export const OPENAI_REASONING_EFFORT_MODELS = [
     'gpt-5.5-2026-04-23',
     'gpt-5.6-sol',
     'gpt-5.6-terra',
+    'gpt-6-astra',
 ];
 
 export const OPENAI_REASONING_EFFORT_MAP = {
@@ -519,7 +520,7 @@ export const OPENAI_PRO_REASONING_MODELS = /^gpt-5\.6/;
  * Models that support Responses API prompt cache controls (`prompt_cache_options`).
  * GPT-5.6 and later model families.
  */
-export const OPENAI_PROMPT_CACHE_OPTIONS_MODELS = /^gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})/;
+export const OPENAI_PROMPT_CACHE_OPTIONS_MODELS = /^gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})|gpt-6-astra/;
 
 /**
  * Models that should use the OpenAI Responses API (/v1/responses) instead of Chat Completions.

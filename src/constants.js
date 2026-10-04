@@ -490,6 +490,8 @@ export const OPENAI_REASONING_EFFORT_MODELS = [
     'gpt-5.6-sol',
     'gpt-5.6-terra',
     'gpt-6-astra',
+    'gpt-6-sol',
+    'gpt-6.1-sol',
 ];
 
 export const OPENAI_REASONING_EFFORT_MAP = {
@@ -500,7 +502,7 @@ export const OPENAI_REASONING_EFFORT_MAP = {
     medium: 'medium',
     high: 'high',
     xhigh: 'xhigh',
-    max: 'xhigh',
+    max: 'max',
 };
 
 /**
@@ -520,13 +522,13 @@ export const OPENAI_PRO_REASONING_MODELS = /^gpt-5\.6/;
  * Models that support Responses API prompt cache controls (`prompt_cache_options`).
  * GPT-5.6 and later model families.
  */
-export const OPENAI_PROMPT_CACHE_OPTIONS_MODELS = /^gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})|gpt-6-astra/;
+export const OPENAI_PROMPT_CACHE_OPTIONS_MODELS = /^gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})|gpt-6/;
 
 /**
  * Models that should use the OpenAI Responses API (/v1/responses) instead of Chat Completions.
  * These are reasoning models that benefit from the richer output format.
  */
-export const OPENAI_RESPONSES_API_MODELS = [OPENAI_REASONING_EFFORT_MODELS, /gpt-5[^chat]*/];
+export const OPENAI_RESPONSES_API_MODELS = [OPENAI_REASONING_EFFORT_MODELS, /gpt-[5-9]/];
 
 export const NANOGPT_REASONING_EFFORT_MAP = {
     min: 'none',

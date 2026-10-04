@@ -4897,8 +4897,8 @@ router.post('/generate', async function (request, response) {
         }
 
         if ([CHAT_COMPLETION_SOURCES.CUSTOM, CHAT_COMPLETION_SOURCES.OPENAI].includes(request.body.chat_completion_source)) {
-            if (/^gpt-5/.test(request.body.model)) {
-            bodyParams['service_tier'] = request.body.service_tier;
+            if (/^gpt-[5-9]/.test(request.body.model)) {
+                bodyParams['service_tier'] = request.body.service_tier;
             } else {
                 delete bodyParams['service_tier'];
             }

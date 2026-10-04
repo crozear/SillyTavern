@@ -3152,7 +3152,11 @@ function getReasoningEffort(settings = null, model = null) {
                 }
 
                 if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)) {
-                    if (/^gpt-5\.(4|5|6)/.test(model)) {
+                    // gpt-5.5/5.6/6.x effort scales start at 'low' — no 'none'/'minimal' tier
+                    if (/^gpt-(5\.(5|6)|[6-9])/.test(model)) {
+                        return reasoning_effort_types.low;
+                    }
+                    if (/^gpt-5\.4/.test(model)) {
                         return 'none';
                     }
                     if (/^gpt-5/.test(model)) {
@@ -3170,10 +3174,24 @@ function getReasoningEffort(settings = null, model = null) {
                     return reasoning_effort_types.max;
                 }
 
-                return [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source) && /^gpt-5.(2|4)/.test(model)
-                    ? reasoning_effort_types.xhigh
-                    : reasoning_effort_types.high;
+                if ([chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)) {
+                    // gpt-5.6/6.x top out at 'max'; gpt-5.2/5.4/5.5 at 'xhigh'
+                    if (/^gpt-(5\.6|[6-9])/.test(model)) {
+                        return reasoning_effort_types.max;
+                    }
+                    if (/^gpt-5\.(2|4|5)/.test(model)) {
+                        return reasoning_effort_types.xhigh;
+                    }
+                }
+
+                return reasoning_effort_types.high;
             default:
+                // gpt-5.5/5.6/6.x have no 'none' tier — clamp to the lowest supported
+                if (settings.reasoning_effort === reasoning_effort_types.none
+                    && [chat_completion_sources.OPENAI, chat_completion_sources.AZURE_OPENAI].includes(settings.chat_completion_source)
+                    && /^gpt-(5\.(5|6)|[6-9])/.test(model)) {
+                    return reasoning_effort_types.low;
+                }
                 return settings.reasoning_effort;
         }
     }
@@ -3631,7 +3649,7 @@ export async function createGenerationParameters(settings, model, type, messages
         }
     }
 
-    if (gptSources.includes(settings.chat_completion_source) && /gpt-5/.test(model)) {
+    if (gptSources.includes(settings.chat_completion_source) && /gpt-[5-9]/.test(model)) {
         generate_data.max_completion_tokens = generate_data.max_tokens;
         delete generate_data.max_tokens;
         delete generate_data.logprobs;
@@ -5852,7 +5870,7 @@ function getMaxContextOpenAI(value) {
     /** @type {[RegExp, number][]} */
     const contextMap = [
         [/^gpt-5\.[45]/, max_1mil],
-        [/^gpt-5/, max_400k],
+        [/^gpt-[5-9]/, max_400k],
         [/gpt-4\.1/, max_1mil],
         [/gpt-audio/, max_128k],
         [/^o1/, max_128k],
@@ -7029,6 +7047,7 @@ export function isImageInliningSupported() {
         'gpt-4.5-preview',
         'gpt-4o',
         'gpt-5',
+        'gpt-6',
         'o1',
         'o3',
         'o4-mini',
